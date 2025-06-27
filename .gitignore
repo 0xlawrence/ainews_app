@@ -1,0 +1,64 @@
+# Python byte-code and cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.env
+.env.*
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Logs and runtime files
+*.log
+logs/
+
+# Test & coverage outputs
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Data & artifacts
+backups/
+drafts/*.html
+drafts/backup/
+data/
+!data/README.md
+!drafts/*.md
+
+# FAISS and large binary indexes
+*.bin
+*.faiss
+
+# Supabase local configs
+.supabase/
+
+# Jupyter & IPython
+.ipynb_checkpoints/
+*.ipynb
+
+# Markdown temp/rendered artifacts
+*.tmp.md
+
+# Mac/Linux trash
+.Trashes
+
+# GitHub Actions cache & artefacts
+**/node_modules/
+
+# JetBrains
+*.iml
+.idea/
+
+# End of file 

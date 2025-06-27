@@ -1,0 +1,55 @@
+# {{ date.strftime('%Y年%m月%d日') }} AI NEWS TLDR
+
+{% if lead_text %}
+## {{ lead_text.title }}
+
+{% for paragraph in lead_text.paragraphs %}
+{{ paragraph }}
+
+{% endfor %}
+{% else %}
+本日のAI関連ニュースをお届けします。
+{% endif %}
+
+## 目次
+
+{% for article in articles %}
+{{ loop.index }}. {{ article.japanese_title | toc_format }}{% if article.is_update %} 🆙{% endif %}
+
+{% endfor %}
+
+---
+
+{%- for article in articles %}
+
+## {{ loop.index }}. {{ article.japanese_title }}{% if article.is_update %} 🆙{% endif %}
+
+{%- if article.summarized_article and article.summarized_article.summary and article.summarized_article.summary.summary_points %}
+
+{% for point in article.summarized_article.summary.summary_points %}
+- {{ point }}
+{% endfor %}
+
+{% endif %}
+
+{% if article.citations %}
+{% for citation in article.citations %}
+{%- if citation and citation.source_name and citation.url %}
+> **{{ citation.source_name }}** ({{ citation.url }}): {{ citation.japanese_summary or citation.title or 'AI関連記事' }}
+{%- endif %}
+{%- endfor %}
+{% endif %}
+
+{% if article.context_analysis and article.context_analysis.references %}
+**参考記事**: {% for ref in article.context_analysis.references %}[{{ ref }}](../search?q={{ ref }}){% if not loop.last %}, {% endif %}{% endfor %}
+{% endif %}
+
+{%- endfor %}
+
+---
+
+## Lawrence's Insights
+
+*※ここにLawrenceさんの手入力コメントを追加してください*
+
+---

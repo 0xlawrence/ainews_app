@@ -1,0 +1,743 @@
+{
+  "sources": [
+    {
+      "id": "techcrunch",
+      "name": "TechCrunch",
+      "url": "https://techcrunch.com/feed/",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "tech",
+        "startup",
+        "news"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Tech industry news with strong AI coverage (re-enabled with improved filtering)",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "nextword_ai",
+      "name": "NextWord on AI",
+      "url": "https://nextword.substack.com/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "enterprise",
+        "strategy",
+        "analysis"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "In-depth analysis of enterprise AI trends and strategy.",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "openai_news",
+      "name": "OpenAI News",
+      "url": "https://openai.com/news/rss.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "openai",
+        "news",
+        "chatgpt",
+        "releases"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Official OpenAI news including ChatGPT release notes and updates",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "anthropic_news",
+      "name": "Anthropic News",
+      "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_anthropic.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "anthropic",
+        "claude",
+        "research",
+        "safety"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Anthropic公式ニュース・研究発表 (Third-party RSS - monitor reliability)",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "google_research_blog",
+      "name": "Google Research Blog",
+      "url": "https://research.google/blog/rss",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "research",
+        "google",
+        "ml"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Google Research blog (Updated to official RSS URL)",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "ieee_spectrum_ai",
+      "name": "IEEE Spectrum AI",
+      "url": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "research",
+        "technical",
+        "ieee"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "IEEE Spectrum artificial intelligence coverage",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "huggingface_blog",
+      "name": "Hugging Face Blog",
+      "url": "https://huggingface.co/blog/feed.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "ml",
+        "transformers",
+        "huggingface"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Hugging Face technical blog and updates",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "huggingface_daily_papers",
+      "name": "Hugging Face Daily Papers",
+      "url": "https://rsshub.app/huggingface/daily-papers",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "papers",
+        "research",
+        "huggingface"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "metadata": {
+        "description": "Latest AI research papers curated by Hugging Face",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "venturebeat_ai",
+      "name": "VentureBeat AI",
+      "url": "https://feeds.feedburner.com/venturebeat/SZYF",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "startup",
+        "business",
+        "venture"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "AI startup and business technology news (re-enabled for content diversity)",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "htdocs_dev",
+      "name": "htdocs.dev Blog",
+      "url": "https://htdocs.dev/rss.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "developer",
+        "tools",
+        "coding",
+        "claude"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Personal blog covering AI developer productivity and Claude Code best practices",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "wired_ai",
+      "name": "WIRED AI",
+      "url": "https://www.wired.com/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "tech",
+        "culture",
+        "future"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "metadata": {
+        "description": "AI technology and culture coverage from WIRED",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "zenn_llm",
+      "name": "Zenn LLM",
+      "url": "https://zenn.dev/topics/llm/feed",
+      "source_type": "rss",
+      "tags": [
+        "llm",
+        "japanese",
+        "zenn",
+        "community"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "日本語のLLM関連技術記事 (re-enabled for Japanese AI content)",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "openai_research",
+      "name": "OpenAI Research",
+      "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_openai_research.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "openai",
+        "research",
+        "papers"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "OpenAI Research publications (Third-party RSS - monitor reliability)",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "ollama_blog",
+      "name": "Ollama Blog",
+      "url": "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/feed_ollama.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "ollama",
+        "local",
+        "llm"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "metadata": {
+        "description": "Ollama local LLM platform updates (disabled - low frequency and relevance)",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "note_ai_japan",
+      "name": "note AI関連記事",
+      "url": "https://note.com/hashtag/ai/rss",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "japanese",
+        "community",
+        "note"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "metadata": {
+        "description": "日本のAI関係者のnote記事",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "zenn_ai_general",
+      "name": "Zenn AI全般",
+      "url": "https://zenn.dev/topics/ai/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "japanese",
+        "zenn",
+        "technical"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "metadata": {
+        "description": "日本のAI技術記事（Zenn）(disabled - quality issues)",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "qiita_ai",
+      "name": "Qiita AI記事",
+      "url": "https://qiita.com/tags/ai/feed.atom",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "japanese",
+        "qiita",
+        "technical"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "metadata": {
+        "description": "日本のAI技術記事（Qiita）",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "hacker_news_ai",
+      "name": "Hacker News AI",
+      "url": "https://hnrss.org/newest?q=AI",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "hackernews",
+        "community",
+        "tech"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "metadata": {
+        "description": "Hacker News AI-related discussions and news (disabled - high noise ratio)",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "the_decoder",
+      "name": "THE DECODER",
+      "url": "https://the-decoder.com/feed/",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "news",
+        "business",
+        "research",
+        "analysis"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "AI news, business insights, and research analysis",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "bay_area_times",
+      "name": "Bay Area Times",
+      "url": "https://rss.beehiiv.com/feeds/0WDaJWk5G1.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "tech",
+        "business",
+        "startup",
+        "news",
+        "finance"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Visual daily newsletter on business and tech with strong AI coverage. 250K+ subscribers covering major tech companies, AI developments, and startup news",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "ai_newsletter_saravia",
+      "name": "Elvis Saravia's AI Newsletter",
+      "url": "https://nlp.elvissaravia.com/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "newsletter",
+        "research",
+        "papers",
+        "nlp"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "AI research papers and industry insights newsletter",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "semianalysis",
+      "name": "SemiAnalysis",
+      "url": "https://semianalysis.com/feed/",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "semiconductor",
+        "analysis",
+        "industry",
+        "hardware"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Semiconductor and AI industry analysis",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "tldr_ai",
+      "name": "TLDR AI",
+      "url": "https://bullrich.dev/tldr-rss/ai.rss",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "newsletter",
+        "curated",
+        "daily",
+        "tech"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Daily curated AI news and insights newsletter (alternative RSS feed)",
+        "priority": "high",
+        "note": "Updated URL - original actions.tldrnewsletter.com was returning 404"
+      }
+    },
+    {
+      "id": "the_information",
+      "name": "The Information",
+      "url": "https://www.theinformation.com/feed",
+      "source_type": "rss",
+      "tags": [
+        "tech",
+        "business",
+        "finance",
+        "startups",
+        "vc",
+        "in-depth",
+        "exclusive"
+      ],
+      "enabled": false,
+      "last_checked": null,
+      "authentication": {
+        "type": "basic",
+        "env_username": "THE_INFORMATION_USERNAME",
+        "env_password": "THE_INFORMATION_PASSWORD"
+      },
+      "metadata": {
+        "description": "In-depth and exclusive stories about the technology business.",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "stratechery",
+      "name": "Stratechery",
+      "url": "https://stratechery.passport.online/feed/rss/CKdr1rkkb7PWB22TNcJHU",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "strategy",
+        "analysis",
+        "business",
+        "tech",
+        "premium"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Strategic analysis of technology and media by Ben Thompson",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "google_gemini_blog",
+      "name": "Google Gemini Blog",
+      "url": "https://blog.google/products/gemini/rss/",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "google",
+        "gemini",
+        "llm",
+        "news",
+        "releases"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Official Google Gemini blog with latest announcements and updates",
+        "priority": "high"
+      }
+    },
+    {
+      "id": "anthropic_youtube",
+      "name": "Anthropic AI",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCrDwWp7EBBv4NwvScIpBDOA",
+      "source_type": "youtube",
+      "tags": [
+        "ai",
+        "anthropic",
+        "claude",
+        "research",
+        "safety"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Official Anthropic AI YouTube channel (Claude, research, safety)",
+        "priority": "high",
+        "channel_id": "UCrDwWp7EBBv4NwvScIpBDOA",
+        "original_url": "https://www.youtube.com/@anthropic-ai"
+      }
+    },
+    {
+      "id": "openai_youtube",
+      "name": "OpenAI",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCXZCJLdBC09xxGZ6gcdrc6A",
+      "source_type": "youtube",
+      "tags": [
+        "ai",
+        "openai",
+        "gpt",
+        "research",
+        "updates"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Official OpenAI YouTube channel (updates, demos, research)",
+        "priority": "high",
+        "channel_id": "UCXZCJLdBC09xxGZ6gcdrc6A",
+        "original_url": "https://www.youtube.com/@OpenAI"
+      }
+    },
+    {
+      "id": "googledeepmind_youtube",
+      "name": "Google DeepMind",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCP7jMXSY2xbc3KCAE0MHQ-A",
+      "source_type": "youtube",
+      "tags": [
+        "ai",
+        "google",
+        "deepmind",
+        "research",
+        "updates"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Official Google DeepMind YouTube channel (research, breakthroughs, updates)",
+        "priority": "high",
+        "channel_id": "UCP7jMXSY2xbc3KCAE0MHQ-A",
+        "original_url": "https://www.youtube.com/@googledeepmind"
+      }
+    },
+    {
+      "id": "ycombinator_youtube",
+      "name": "Y Combinator",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCcefcZRL2oaA_uBNeo5UOWg",
+      "source_type": "youtube",
+      "tags": [
+        "startup",
+        "entrepreneurship",
+        "vc",
+        "technology",
+        "ai"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Y Combinator startup advice and founder stories",
+        "priority": "high",
+        "channel_id": "UCcefcZRL2oaA_uBNeo5UOWg",
+        "original_url": "https://www.youtube.com/@ycombinator"
+      }
+    },
+    {
+      "id": "lexfridman_youtube",
+      "name": "Lex Fridman Podcast",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCSHZKyawb77ixDdsGog4iWA",
+      "source_type": "youtube",
+      "tags": [
+        "ai",
+        "technology",
+        "podcast",
+        "interview",
+        "research",
+        "science"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Long-form AI and technology interviews with researchers and innovators",
+        "priority": "high",
+        "channel_id": "UCSHZKyawb77ixDdsGog4iWA",
+        "original_url": "https://www.youtube.com/c/lexfridman"
+      }
+    },
+    {
+      "id": "a16z_youtube",
+      "name": "a16z (Andreessen Horowitz)",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC9cn0TuPq4dnbTY-CBsm8XA",
+      "source_type": "youtube",
+      "tags": [
+        "vc",
+        "venture_capital",
+        "startup",
+        "technology",
+        "ai",
+        "investment"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Venture capital insights and startup advice from Andreessen Horowitz",
+        "priority": "high",
+        "channel_id": "UC9cn0TuPq4dnbTY-CBsm8XA",
+        "original_url": "https://www.youtube.com/@a16z"
+      }
+    },
+    {
+      "id": "sequoia_youtube",
+      "name": "Sequoia Capital",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UCWrF0oN6unbXrWsTN7RctTw",
+      "source_type": "youtube",
+      "tags": [
+        "vc",
+        "venture_capital",
+        "startup",
+        "technology",
+        "ai",
+        "investment"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Venture capital insights from Sequoia Capital",
+        "priority": "high",
+        "channel_id": "UCWrF0oN6unbXrWsTN7RctTw",
+        "original_url": "https://www.youtube.com/@sequoiacapital"
+      }
+    },
+    {
+      "id": "lennys_podcast_youtube",
+      "name": "Lenny's Podcast",
+      "url": "https://www.youtube.com/feeds/videos.xml?channel_id=UC6t1O76G0jYXOAoYCm153dA",
+      "source_type": "youtube",
+      "tags": [
+        "product",
+        "growth",
+        "startup",
+        "technology",
+        "business",
+        "podcast"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Product management and growth strategies for startups",
+        "priority": "high",
+        "channel_id": "UC6t1O76G0jYXOAoYCm153dA",
+        "original_url": "https://www.youtube.com/c/LennysPodcast"
+      }
+    },
+    {
+      "id": "smol_ai_news",
+      "name": "AI News (smol.ai)",
+      "url": "https://news.smol.ai/rss.xml",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "news",
+        "summary"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "AINews daily AI roundup by smol.ai",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "digital_native",
+      "name": "Digital Native",
+      "url": "https://www.digitalnative.tech/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "startup",
+        "venture",
+        "analysis"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Weekly essays on technology trends and consumer AI opportunities",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "recode_china_ai",
+      "name": "Recode China AI",
+      "url": "https://recodechinaai.substack.com/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "china",
+        "policy",
+        "industry"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Coverage of China's AI ecosystem and policy landscape",
+        "priority": "medium"
+      }
+    },
+    {
+      "id": "import_ai",
+      "name": "Import AI",
+      "url": "https://importai.substack.com/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "research",
+        "newsletter"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Jack Clark's newsletter on AI research and policy",
+        "priority": "high"
+      }
+    }
+  ],
+  "version": "2.0",
+  "settings": {
+    "default_max_items_per_source": 3,
+    "analysis_enabled": true,
+    "auto_publish": false,
+    "ghost_default_status": "draft"
+  }
+}

@@ -1,0 +1,115 @@
+context_analysis_prompt: |
+  あなたは AI ニュース記事の文脈分析の専門家です。与えられた「今回のニュース」と「過去類似ニュース」を比較し、以下の判定結果を返してください。
+
+  ## 判定基準
+
+  **SKIP（重複）**の場合：
+  - 過去のトピックと完全に重複している
+  - 同じ発表・同じ内容を異なるソースが報じている
+  - 新しい情報や進展がない
+
+  **UPDATE（続報）**の場合：
+  - 過去の類似トピックの続報・新展開・追加情報
+  - 既存プロジェクトの進捗報告（ベータ開始、リリース日確定、新機能追加など）
+  - 同じ企業・製品の関連発表（わずかな新情報でもUPDATEと判定）
+  - 過去記事の内容に関連する新しい発見や発表
+  - 法的進展、投資ラウンド進展、パートナーシップ追加など
+  - この場合、過去の文脈を踏まえた修正要約も必要
+
+  **KEEP（独立記事）**の場合：
+  - 類似はしているが独立した新しいトピック
+  - 異なる視点や異なる事例
+  - 関連はあるが別の話題
+
+  ## 今回のニュース
+  **タイトル**: {current_title}
+  **内容**: {current_content}
+  **要約**: {current_summary}
+  **公開日**: {current_date}
+
+  ## 過去類似ニュース（関連度順）
+  {past_related_news}
+
+  ## 出力形式
+  以下のJSON形式で回答してください：
+
+  {{
+    "decision": "SKIP|UPDATE|KEEP",
+    "reasoning": "判定理由を詳しく説明（100-200文字）",
+    "contextual_summary": "過去の文脈を反映した要約（UPDATEの場合のみ、3-4個の箇条書き）",
+    "references": ["関連する過去記事のID"],
+    "confidence_score": 0.85,
+    "update_type": "progress|expansion|correction|follow_up"
+  }}
+
+  ## 重要な注意事項
+  - UPDATE判定を積極的に行う：わずかな新情報でもUPDATEとする
+  - 同じ企業・製品・プロジェクトに関する記事は高確率でUPDATE
+  - 類似度が0.75以上の場合は特に慎重にUPDATE可能性を検討
+  - UPDATEの場合の要約は、過去の経緯を踏まえた文脈を含める
+  - 日付の新しさも考慮する（古い記事の続報の可能性）
+  - 技術的な進歩や企業の発表は時系列順序を重視する
+  - 確信が持てない場合はUPDATEよりもKEEPを優先（読者の利益を重視）
+
+system_prompt: |
+  あなたは AI ニュース記事の文脈分析と関係性判定を行う専門システムです。
+
+  主な役割：
+  1. 新しい記事と過去の記事の関係性を正確に判定
+  2. 続報記事の場合は適切な文脈反映要約を生成
+  3. 重複記事を確実に識別
+  4. 読者にとって価値のある情報判定
+
+  判定は以下の優先順位で行ってください：
+  1. 読者への価値（重複を避け、新しい情報を提供）
+  2. 文脈の継続性（続報の場合は過去との関連を明示）
+  3. 情報の正確性（誤った関連付けを避ける）
+
+  必ず有効なJSONを返し、すべてのフィールドを含めてください。
+
+validation_rules:
+  decision:
+    - "SKIP"
+    - "UPDATE" 
+    - "KEEP"
+  
+  reasoning:
+    min_length: 50
+    max_length: 300
+    
+  contextual_summary:
+    required_when: "decision == UPDATE"
+    format: "bullet_points"
+    count: [3, 4]
+    
+  confidence_score:
+    type: "float"
+    range: [0.0, 1.0]
+    
+  update_type:
+    required_when: "decision == UPDATE"
+    options:
+      - "progress"      # プロジェクトの進捗
+      - "expansion"     # 既存情報の拡張
+      - "correction"    # 修正・訂正情報
+      - "follow_up"     # フォローアップ情報
+
+examples:
+  - description: "明確な続報の場合"
+    input:
+      current_title: "OpenAI GPT-5のベータテスト開始、選ばれた企業に限定公開"
+      past_title: "OpenAI、GPT-5の開発完了を発表、2025年後半リリース予定"
+    expected_decision: "UPDATE"
+    expected_update_type: "progress"
+    
+  - description: "重複記事の場合"
+    input:
+      current_title: "OpenAIがGPT-5を発表"
+      past_title: "OpenAI announces GPT-5 development completion"
+    expected_decision: "SKIP"
+    
+  - description: "関連だが独立した記事の場合"
+    input:
+      current_title: "Anthropic Claude 3.5の性能比較レポート"
+      past_title: "OpenAI GPT-5の性能評価結果"
+    expected_decision: "KEEP"

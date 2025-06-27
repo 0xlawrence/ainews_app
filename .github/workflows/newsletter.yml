@@ -1,0 +1,120 @@
+name: Daily Newsletter Generation
+
+on:
+  schedule:
+    # Run at 09:00 JST (00:00 UTC) every day
+    - cron: '0 0 * * *'
+  workflow_dispatch:  # Allow manual triggering
+    inputs:
+      max_items:
+        description: 'Maximum items to process'
+        required: false
+        default: '30'
+      dry_run:
+        description: 'Dry run mode (true/false)'
+        required: false
+        default: 'false'
+
+jobs:
+  generate-newsletter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Install Playwright browsers
+      run: |
+        playwright install chromium
+    
+    - name: Create output directories
+      run: |
+        mkdir -p drafts logs data/faiss
+    
+    - name: Generate Newsletter
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        LOG_LEVEL: INFO
+      run: |
+        python3 main.py \
+          --max-items ${{ github.event.inputs.max_items || '30' }} \
+          --edition daily \
+          --output-dir drafts/ \
+          ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+    
+    - name: Upload newsletter artifact
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: newsletter-${{ github.run_number }}
+        path: |
+          drafts/
+          logs/
+        retention-days: 30
+    
+    - name: Upload processing logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: logs-${{ github.run_number }}
+        path: logs/
+        retention-days: 7
+    
+    - name: Notify on failure
+      if: failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const { owner, repo } = context.repo;
+          const run_id = context.runId;
+          const run_url = `https://github.com/${owner}/${repo}/actions/runs/${run_id}`;
+          
+          console.log(`Newsletter generation failed. Run URL: ${run_url}`);
+          
+          // You can add Slack/Discord notification here if needed
+          // Example webhook call:
+          // await fetch(process.env.SLACK_WEBHOOK_URL, {
+          //   method: 'POST',
+          //   headers: { 'Content-Type': 'application/json' },
+          //   body: JSON.stringify({
+          //     text: `🚨 Newsletter generation failed: ${run_url}`
+          //   })
+          // });
+
+  test-newsletter:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Run basic tests
+      run: |
+        python3 test_basic_no_deps.py
+    
+    - name: Test CLI help
+      run: |
+        python3 main.py --help

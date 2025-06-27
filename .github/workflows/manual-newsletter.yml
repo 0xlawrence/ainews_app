@@ -1,0 +1,128 @@
+name: Manual Newsletter Generation
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_items:
+        description: 'Maximum items to process'
+        required: true
+        default: '10'
+        type: choice
+        options:
+          - '5'
+          - '10'
+          - '20'
+          - '30'
+      edition:
+        description: 'Newsletter edition'
+        required: true
+        default: 'daily'
+        type: choice
+        options:
+          - 'daily'
+          - 'weekly'
+      dry_run:
+        description: 'Dry run mode (no API calls)'
+        required: false
+        default: false
+        type: boolean
+      debug_mode:
+        description: 'Enable debug logging'
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  generate-newsletter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Create directories
+      run: |
+        mkdir -p drafts logs data/faiss
+    
+    - name: Run basic tests first
+      run: |
+        python3 test_basic_no_deps.py
+    
+    - name: Generate Newsletter
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        LOG_LEVEL: ${{ inputs.debug_mode && 'DEBUG' || 'INFO' }}
+      run: |
+        echo "Starting newsletter generation..."
+        echo "Max items: ${{ inputs.max_items }}"
+        echo "Edition: ${{ inputs.edition }}"
+        echo "Dry run: ${{ inputs.dry_run }}"
+        echo "Debug mode: ${{ inputs.debug_mode }}"
+        
+        python3 main.py \
+          --max-items ${{ inputs.max_items }} \
+          --edition ${{ inputs.edition }} \
+          --output-dir drafts/ \
+          ${{ inputs.dry_run && '--dry-run' || '' }}
+    
+    - name: List generated files
+      if: always()
+      run: |
+        echo "Generated files:"
+        find drafts/ -type f -name "*.md" 2>/dev/null || echo "No markdown files found"
+        echo "Log files:"
+        find logs/ -type f -name "*.json" 2>/dev/null || echo "No log files found"
+    
+    - name: Show newsletter preview
+      if: success() && !inputs.dry_run
+      run: |
+        LATEST_NEWSLETTER=$(find drafts/ -name "*.md" -type f -exec ls -t {} + | head -1)
+        if [ -n "$LATEST_NEWSLETTER" ]; then
+          echo "Newsletter preview (first 50 lines):"
+          head -50 "$LATEST_NEWSLETTER"
+          echo "..."
+          echo "Full newsletter available in artifacts."
+        fi
+    
+    - name: Upload newsletter
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: manual-newsletter-${{ github.run_number }}
+        path: |
+          drafts/
+          logs/
+        retention-days: 30
+    
+    - name: Create summary
+      if: always()
+      run: |
+        echo "## Newsletter Generation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Max Items**: ${{ inputs.max_items }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Edition**: ${{ inputs.edition }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Dry Run**: ${{ inputs.dry_run }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ job.status }}" = "success" ]; then
+          NEWSLETTER_COUNT=$(find drafts/ -name "*.md" -type f | wc -l)
+          LOG_COUNT=$(find logs/ -name "*.json" -type f | wc -l)
+          echo "- **Generated Newsletters**: $NEWSLETTER_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Log Files**: $LOG_COUNT" >> $GITHUB_STEP_SUMMARY
+        fi
