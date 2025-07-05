@@ -61,4 +61,6 @@ data/
 *.iml
 .idea/
 
-# End of file 
+# End of file drafts/
+logs/
+htmlcov/
