@@ -58,7 +58,9 @@ jobs:
     
     - name: Run basic tests first
       run: |
-        python3 test_basic_no_deps.py
+        echo "Running basic dependency-free tests..."
+        python3 tests/test_basic_no_deps.py
+        echo "Basic tests completed successfully!"
     
     - name: Generate Newsletter
       env:
@@ -101,9 +103,16 @@ jobs:
           echo "Full newsletter available in artifacts."
         fi
     
+    - name: Run PRD compliance tests
+      if: success() && !inputs.dry_run
+      run: |
+        echo "Running PRD compliance tests on generated newsletter..."
+        python tests/test_prd_compliance.py
+      continue-on-error: true  # Don't fail the workflow if compliance tests fail
+    
     - name: Upload newsletter
       if: success()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: manual-newsletter-${{ github.run_number }}
         path: |

@@ -1,9 +1,9 @@
 name: Daily Newsletter Generation
 
 on:
-  schedule:
-    # Run at 09:00 JST (00:00 UTC) every day
-    - cron: '0 0 * * *'
+  # schedule:
+  #   # Run at 09:00 JST (00:00 UTC) every day
+  #   - cron: '0 0 * * *'
   workflow_dispatch:  # Allow manual triggering
     inputs:
       max_items:
@@ -61,9 +61,16 @@ jobs:
           --output-dir drafts/ \
           ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
     
+    - name: Run PRD compliance tests
+      if: success() && github.event.inputs.dry_run != 'true'
+      run: |
+        echo "Running PRD compliance tests on generated newsletter..."
+        python3 tests/test_prd_compliance.py
+      continue-on-error: true  # Don't fail daily generation if compliance tests fail
+    
     - name: Upload newsletter artifact
       if: success()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: newsletter-${{ github.run_number }}
         path: |
@@ -73,7 +80,7 @@ jobs:
     
     - name: Upload processing logs
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: logs-${{ github.run_number }}
         path: logs/
@@ -113,8 +120,12 @@ jobs:
     
     - name: Run basic tests
       run: |
-        python3 test_basic_no_deps.py
+        echo "Running basic dependency-free tests..."
+        python3 tests/test_basic_no_deps.py
+        echo "Basic tests completed successfully!"
     
     - name: Test CLI help
       run: |
+        echo "Testing CLI interface..."
         python3 main.py --help
+        echo "CLI test completed successfully!"

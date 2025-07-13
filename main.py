@@ -28,6 +28,7 @@ import argparse
 
 from src.workflow.newsletter_workflow import create_newsletter_workflow
 from src.models.schemas import NewsletterConfig, ProcessingLog
+from src.config.settings import get_settings
 from src.utils.logger import setup_logging
 
 
@@ -103,29 +104,19 @@ def main():
         embedding_dimensions=args.embedding_dimensions
     )
     
-    # Validate environment variables
-    required_env_pairs = [
-        ("OPENAI_API_KEY",),
-        ("GEMINI_API_KEY",),
-        ("CLAUDE_API_KEY", "ANTHROPIC_API_KEY"),  # どちらか必須
-        ("SUPABASE_URL",),
-        ("SUPABASE_SERVICE_KEY", "SUPABASE_KEY"),  # SERVICE_KEY優先、KEYがfallback
-    ]
-    
-    missing_vars = []
-    for pair in required_env_pairs:
-        if not any(os.getenv(var) for var in pair):
-            # ペア（または単独）すべて未設定
-            missing_vars.append("/".join(pair))
-
-    if missing_vars and not args.dry_run:
-        logger.error(
-            "Missing required environment variables", 
-            missing_vars=missing_vars
-        )
-        raise click.ClickException(
-            f"Missing environment variables: {', '.join(missing_vars)}"
-        )
+    # Validate settings - this will raise validation errors if required vars are missing
+    if not args.dry_run:
+        try:
+            settings = get_settings()
+            # Test that we can access all required settings
+            _ = settings.llm.openai_api_key
+            _ = settings.llm.gemini_api_key  
+            _ = settings.llm.claude_api_key
+            _ = settings.database.supabase_url
+            _ = settings.database.supabase_key
+        except Exception as e:
+            logger.error("Configuration validation failed", error=str(e))
+            raise click.ClickException(f"Configuration error: {str(e)}")
     
     # Load sources configuration
     sources_path = Path("sources.json")
