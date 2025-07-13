@@ -36,11 +36,15 @@ class SemanticScore:
 class AISemanticFilter:
     """Enhanced AI content filter using semantic analysis."""
     
-    def __init__(self):
+    def __init__(self, base_threshold: float = 0.15, high_threshold: float = 0.45):
         self.embedding_manager = None
         self.ai_reference_embeddings = None
         self.non_ai_reference_embeddings = None
         self.initialized = False
+        
+        # Configurable thresholds (default: more permissive than hardcoded 0.3/0.6)
+        self.base_threshold = base_threshold  # Moderate AI relevance threshold
+        self.high_threshold = high_threshold  # High AI relevance threshold
         
         # AI関連の理想的な記事例（多様なAI分野をカバー）
         self.ai_examples = [
@@ -72,7 +76,13 @@ class AISemanticFilter:
             "オペレーティングシステム Windows macOS Linux システム設定 OS管理",
             "電力供給 データセンター インフラ 電力安定化 エネルギー効率 電力管理",
             "起業家支援 スタートアップ投資 ベンチャーキャピタル 事業計画",
-            "ソフトウェア開発 プログラミング言語 開発環境 IDE設定"
+            "ソフトウェア開発 プログラミング言語 開発環境 IDE設定",
+            "上履き 靴 レビュー 口コミ 子供用品 履物 商品評価 製品テスト",
+            "キャリオット 製品紹介 商品比較 使用感 耐久性 洗濯 実用性",
+            "ファッション 衣類 アクセサリー 美容 化粧品 スキンケア 健康食品",
+            "料理 レシピ 食材 グルメ レストラン 食品レビュー 調理器具",
+            "旅行 観光地 ホテル 交通手段 航空券 宿泊予約 旅行記",
+            "スポーツ 野球 サッカー バスケ 選手 試合結果 スポーツ用品"
         ]
         
     async def initialize(self):
@@ -150,10 +160,10 @@ class AISemanticFilter:
             semantic_score = avg_ai_sim - (avg_non_ai_sim * non_ai_penalty_multiplier)
             semantic_score = max(0.0, min(1.0, semantic_score))  # 0-1に正規化
             
-            # 理由の生成
-            if semantic_score > 0.6:
+            # 理由の生成 (configurable thresholds)
+            if semantic_score > self.high_threshold:
                 reason = f"High AI relevance (AI:{avg_ai_sim:.2f}, Non-AI:{avg_non_ai_sim:.2f})"
-            elif semantic_score > 0.3:
+            elif semantic_score > self.base_threshold:
                 reason = f"Moderate AI relevance (AI:{avg_ai_sim:.2f}, Non-AI:{avg_non_ai_sim:.2f})"
             else:
                 reason = f"Low AI relevance (AI:{avg_ai_sim:.2f}, Non-AI:{avg_non_ai_sim:.2f})"
@@ -259,8 +269,8 @@ class AISemanticFilter:
     async def filter_articles_with_semantic(
         self, 
         articles: List[RawArticle], 
-        base_threshold: float = 0.20,  # PRD準拠：7-10記事確保のため大幅緩和
-        min_threshold: float = 0.10   # 最低閾値も大幅緩和
+        base_threshold: float = 0.10,  # Match schemas.py config
+        min_threshold: float = 0.05   # Minimum threshold for article count assurance
     ) -> List[FilteredArticle]:
         """セマンティック分析を含む高度なフィルタリング"""
         
@@ -281,8 +291,8 @@ class AISemanticFilter:
                 
                 # 統合スコア計算（セマンティックの重みを下げる）
                 if self.initialized and semantic_result.final_score > 0:
-                    # セマンティック分析が利用可能な場合：キーワード70% + セマンティック30%
-                    final_score = keyword_score * 0.7 + semantic_result.final_score * 0.3
+                    # セマンティック分析が利用可能な場合：キーワード80% + セマンティック20%（重み調整）
+                    final_score = keyword_score * 0.8 + semantic_result.final_score * 0.2
                     reason = f"{keyword_reason} | {semantic_result.reason}"
                 else:
                     # セマンティック分析が利用できない場合：キーワードのみ
@@ -349,8 +359,11 @@ class AISemanticFilter:
 
 
 # 従来のフィルターとの統合用ファクトリー関数
-async def create_enhanced_ai_filter():
+async def create_enhanced_ai_filter(base_threshold: float = 0.10, high_threshold: float = 0.55):
     """Enhanced AI filter インスタンスを作成"""
-    filter_instance = AISemanticFilter()
+    filter_instance = AISemanticFilter(
+        base_threshold=base_threshold,
+        high_threshold=high_threshold
+    )
     await filter_instance.initialize()
     return filter_instance

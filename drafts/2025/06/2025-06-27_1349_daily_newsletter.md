@@ -36,6 +36,7 @@
 
 - 特に、電力消費量が非常に大きいAIデータセンターを最初のターゲットとしており、効率的なエネルギー管理と電力安定供給に貢献する見込みです。
 
+
 > **TechCrunch** (https://techcrunch.com/2025/06/26/redwood-materials-launches-energy-storage-business-and-its-first-target-is-ai-data-centers/): バッテリーリサイクルのRedwood Materialsが、AIデータセンターの爆発的電力需要に対応するエネルギー貯蔵事業を開始。持続可能なAIインフラ構築へ、同社のバッテリー技術を投入する。
 
 ## 2. Prehype創業者Werdelin氏、AI活用Audosで起業家支援を年間数十万社へ拡大

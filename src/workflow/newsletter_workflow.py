@@ -34,7 +34,8 @@ from src.utils.content_validator import validate_article_content
 from src.utils.error_handler import with_retry, get_error_summary
 from src.utils.langsmith_tracer import get_tracer, trace_newsletter_generation, finalize_newsletter_tracing
 from src.utils.logger import setup_logging
-from src.constants.settings import PERFORMANCE, SIMILARITY_THRESHOLDS, NEWSLETTER
+from src.utils.image_processor import ImageProcessor
+from src.config.settings import get_settings
 from src.constants.mappings import COMPANY_MAPPINGS
 from src.constants.messages import DEFAULT_CONTENT
 
@@ -51,6 +52,7 @@ class NewsletterWorkflow:
         self.embedding_manager = None  # Initialized lazily
         self.context_analyzer = None   # Initialized lazily
         self.semantic_filter = None    # Initialized lazily
+        self.image_processor = None    # Initialized lazily
         self.quaily_client = None
     
     async def initialize_with_past_articles(self, days_back: int = 7):
@@ -125,6 +127,9 @@ class NewsletterWorkflow:
                     if getattr(art, 'published_date', None) and art.published_date.date() == target
                 ]
             
+            # Sort articles by source priority (higher priority sources first)
+            raw_articles = self._sort_articles_by_priority(raw_articles)
+            
             # Limit total articles
             raw_articles = raw_articles[:config.max_items]
             
@@ -192,12 +197,18 @@ class NewsletterWorkflow:
             try:
                 # Initialize semantic filter if not already done
                 if self.semantic_filter is None:
-                    self.semantic_filter = AISemanticFilter()
+                    # Use configured thresholds from settings
+                    base_threshold = config.ai_relevance_threshold  # Use configured threshold directly
+                    high_threshold = base_threshold + 0.3  # High threshold = base + 0.3
+                    self.semantic_filter = AISemanticFilter(
+                        base_threshold=base_threshold,
+                        high_threshold=high_threshold
+                    )
                     await self.semantic_filter.initialize()
                 
-                # PRD準拠: 7-10記事確保のため閾値を大幅緩和
-                base_threshold = max(0.15, config.ai_relevance_threshold - 0.25)  # PRD要件のため大幅緩和
-                min_threshold = max(0.08, config.ai_relevance_threshold - 0.35)  # 最低限のAI関連性のみ確保
+                # PRD準拠: 高品質記事確保のため適切な閾値使用
+                base_threshold = config.ai_relevance_threshold  # Use configured threshold directly
+                min_threshold = max(0.05, config.ai_relevance_threshold - 0.05)  # 大幅に緩和: 15% → 5%
                 
                 filtered_articles = await self.semantic_filter.filter_articles_with_semantic(
                     articles=raw_articles,
@@ -450,247 +461,19 @@ class NewsletterWorkflow:
                     "status": "no_articles_to_consolidate"
                 }
             
-            # Phase 1: Intelligent duplicate consolidation
-            logger.info("Phase 1: Intelligent duplicate consolidation")
+            # Phase 1: Intelligent duplicate consolidation (using refactored method)
+            consolidated_articles = await self._consolidate_duplicates(summarized_articles)
             
-            # Use enhanced consolidation with lowered thresholds
-            consolidation_threshold = getattr(config, 'duplicate_similarity_threshold', 0.85)
-            # Lower the threshold for consolidation to catch more related articles
-            adjusted_threshold = max(0.55, consolidation_threshold - 0.25)  # Further lowered
-            
-            # consolidate_similar_articles は同期関数なので await 不要
-            consolidated_articles = consolidate_similar_articles(
-                articles=summarized_articles,
-                jaccard_threshold=adjusted_threshold,
-                sequence_threshold=adjusted_threshold,
-                consolidation_mode=True
+            # Phase 2: Context analysis and article processing (using refactored method)
+            deduplicated_articles, duplicate_count, update_count = await self._process_articles_with_context(
+                consolidated_articles
             )
             
-            consolidation_stats = {
-                "input_articles": len(summarized_articles),
-                "output_articles": len(consolidated_articles),
-                "articles_consolidated": len(summarized_articles) - len(consolidated_articles)
-            }
-            
-            logger.info(
-                "Duplicate consolidation completed",
-                **consolidation_stats
-            )
-            
-            # Phase 2: Context analysis and article processing
-            logger.info("Phase 2: Context analysis and article processing")
-            
-            # Initialize context analyzer if needed
-            if self.context_analyzer is None:
-                # Initialize embedding manager first if needed
-                if self.embedding_manager is None:
-                    self.embedding_manager = EmbeddingManager()
-                
-                self.context_analyzer = ContextAnalyzer(
-                    embedding_manager=self.embedding_manager,
-                    llm_router=self.llm_router
-                )
-            
-            deduplicated_articles = []
-            duplicate_count = 0
-            update_count = 0
-            
-            for article in consolidated_articles:
-                try:
-                    # Pass only the already *summarized* articles of previously accepted items
-                    # to the duplicate checker.  Otherwise `ProcessedArticle` objects (which do not
-                    # expose `filtered_article` at the top-level) cause attribute errors and the
-                    # article is skipped.  This bug results inほぼ1件しか記事が残らない問題の原因でした。
-                    duplicate_result = self.duplicate_checker.check_duplicate(
-                        current_article=article,
-                        past_articles=[p.summarized_article for p in deduplicated_articles]  # use compatible objects
-                    )
-                    
-                    # Enhanced context analysis for ALL articles (PRD F-16, F-17改善)
-                    if self.context_analyzer:
-                        try:
-                            context_analysis = await self.context_analyzer.analyze_context(
-                                current_article=article,
-                                max_similar_articles=5,
-                                similarity_threshold=0.65  # 閾値を下げて関連性検出を改善
-                            )
-                            
-                            # すべての記事に文脈情報を適用
-                            if context_analysis and context_analysis.references:
-                                # UPDATEの場合は特別処理
-                                if context_analysis.decision == "UPDATE":
-                                    is_update = True
-                                    
-                                    # Generate context-aware summary if available
-                                    if context_analysis.contextual_summary:
-                                        # Create enhanced summary incorporating past context
-                                        enhanced_summary_points = await self._generate_contextual_update_summary(
-                                            article, context_analysis
-                                        )
-                                        
-                                        if enhanced_summary_points:
-                                            # Update the article's summary
-                                            from src.models.schemas import SummaryOutput
-                                            original_summary = article.summary
-                                            
-                                            enhanced_summary = SummaryOutput(
-                                                summary_points=enhanced_summary_points,
-                                                confidence_score=min(original_summary.confidence_score + 0.15, 1.0),
-                                                source_reliability=original_summary.source_reliability,
-                                                model_used=original_summary.model_used + "_contextual",
-                                                fallback_used=original_summary.fallback_used,
-                                                total_tokens=original_summary.total_tokens,
-                                                processing_time_seconds=original_summary.processing_time_seconds
-                                            )
-                                            
-                                            article.summary = enhanced_summary
-                                            
-                                            logger.info(
-                                                "Enhanced UPDATE article with past context",
-                                                article_id=article.filtered_article.raw_article.id,
-                                                context_refs=len(context_analysis.references)
-                                            )
-                                
-                                # KEEPの場合も関連記事情報を記録（PRD F-17準拠）
-                                elif context_analysis.decision == "KEEP" and context_analysis.references:
-                                    # メタデータとして文脈情報を保存
-                                    if not hasattr(article, 'context_metadata'):
-                                        article.context_metadata = {}
-                                    
-                                    article.context_metadata.update({
-                                        'related_articles': context_analysis.references[:3],
-                                        'context_reasoning': context_analysis.reasoning,
-                                        'similarity_score': context_analysis.similarity_score
-                                    })
-                                    
-                                    logger.info(
-                                        "Added context metadata to KEEP article",
-                                        article_id=article.filtered_article.raw_article.id,
-                                        related_count=len(context_analysis.references)
-                                    )
-                        
-                        except Exception as e:
-                            logger.warning(
-                                "Context analysis failed, proceeding with standard processing",
-                                article_id=article.filtered_article.raw_article.id,
-                                error=str(e)
-                            )
-                            context_analysis = None
-                    else:
-                        context_analysis = None
-                    
-                    # Create processed article if not duplicate/skipped
-                    if not duplicate_result.is_duplicate:
-                        # Skip title generation in workflow, let NewsletterGenerator handle it
-                        japanese_title = None  # Will be generated later in NewsletterGenerator
-                        
-                        processed_article = ProcessedArticle(
-                            summarized_article=article,
-                            duplicate_check=duplicate_result,
-                            context_analysis=context_analysis,
-                            final_summary=article.summary.summary_points,
-                            japanese_title=japanese_title,
-                            citations=[],  # Citations will be generated later
-                            is_update=is_update
-                        )
-                        
-                        deduplicated_articles.append(processed_article)
-                        
-                        # Add to embedding index for future context analysis
-                        try:
-                            await self.embedding_manager.add_article(
-                                article, save_immediately=False
-                            )
-                        except Exception as embedding_error:
-                            logger.warning(
-                                "Failed to add article to embedding index",
-                                article_id=article.filtered_article.raw_article.id,
-                                error=str(embedding_error)
-                            )
-                        
-                        # Save to Supabase contextual_articles
-                        try:
-                            from src.utils.supabase_client import save_contextual_article, save_article_relationship
-                            
-                            # Generate embedding for Supabase
-                            embedding_text = f"{article.filtered_article.raw_article.title}\n{article.filtered_article.raw_article.content}\n" + "\n".join(article.summary.summary_points)
-                            embedding_vector = await self.embedding_manager.generate_embedding(embedding_text)
-                            
-                            # Save contextual article
-                            article_uuid = await save_contextual_article(
-                                article=processed_article,
-                                embedding=embedding_vector.tolist() if embedding_vector is not None else None,
-                                topic_cluster=None  # Will be set in clustering phase
-                            )
-                            
-                            # Save relationships if this is an update
-                            if is_update and context_analysis and context_analysis.references and article_uuid:
-                                for ref_article_id in context_analysis.references[:3]:  # Limit to 3 relationships
-                                    # Get UUID of referenced article
-                                    from src.utils.supabase_client import get_supabase_client
-                                    client = await get_supabase_client()
-                                    if client.is_available():
-                                        ref_result = client.client.table("contextual_articles").select("id").eq(
-                                            "article_id", ref_article_id
-                                        ).execute()
-                                        
-                                        if ref_result.data:
-                                            ref_uuid = ref_result.data[0]["id"]
-                                            await save_article_relationship(
-                                                parent_article_uuid=ref_uuid,
-                                                child_article_uuid=article_uuid,
-                                                relationship_type="update",
-                                                similarity_score=context_analysis.similarity_score,
-                                                reasoning=context_analysis.reasoning
-                                            )
-                            
-                            logger.info(
-                                "Saved article to Supabase",
-                                article_id=article.filtered_article.raw_article.id,
-                                article_uuid=article_uuid,
-                                is_update=is_update
-                            )
-                            
-                        except Exception as supabase_error:
-                            logger.warning(
-                                "Failed to save article to Supabase",
-                                article_id=article.filtered_article.raw_article.id,
-                                error=str(supabase_error)
-                            )
-                    
-                    else:
-                        duplicate_count += 1
-                        logger.info(
-                            "Duplicate article filtered out",
-                            article_id=article.filtered_article.raw_article.id,
-                            similarity_score=duplicate_result.similarity_score
-                        )
-                
-                except Exception as e:
-                    logger.error(
-                        "Error processing article for duplicates/context",
-                        article_id=article.filtered_article.raw_article.id,
-                        error=str(e)
-                    )
-                    continue
-            
+            # Phase 3: Log results (using refactored method)
             processing_time = time.time() - start_time
-            
-            # Log processing
-            log_entry = ProcessingLog(
-                processing_id=config.processing_id,
-                timestamp=time.time(),
-                stage="check_duplicates_context",
-                event_type="info",
-                message=f"Processed {len(deduplicated_articles)} articles, removed {duplicate_count} duplicates, found {update_count} updates",
-                data={
-                    "input_articles": len(summarized_articles),
-                    "output_articles": len(deduplicated_articles),
-                    "duplicates_removed": duplicate_count,
-                    "updates_found": update_count,
-                    "duplicate_rate": duplicate_count / len(summarized_articles) if summarized_articles else 0
-                },
-                duration_seconds=processing_time
+            log_entry = self._log_duplicate_processing_results(
+                config, summarized_articles, deduplicated_articles, 
+                duplicate_count, update_count, processing_time
             )
             
             return {
@@ -745,10 +528,12 @@ class NewsletterWorkflow:
             if not duplicate_result.is_duplicate:
                 # Context analysis task
                 if self.context_analyzer:
+                    from src.config.settings import get_settings
+                    settings = get_settings()
                     context_task = self.context_analyzer.analyze_context(
                         current_article=article,
                         max_similar_articles=5,
-                        similarity_threshold=0.7
+                        similarity_threshold=settings.embedding.context_similarity_threshold
                     )
                 
                 # Japanese title generation task  
@@ -801,239 +586,223 @@ class NewsletterWorkflow:
                 'error': str(e)
             }
     
-    async def check_duplicates_node_parallel(self, state: Dict) -> Dict:
-        """
-        Parallel version of check_duplicates_node with significant performance improvements.
-        Processes articles in parallel batches with concurrent LLM operations.
-        """
-        logger.info("Starting parallel duplicate checking and context analysis")
-        start_time = time.time()
-        
-        try:
-            config = state["config"]
-            summarized_articles = state["summarized_articles"]
-            
-            if not summarized_articles:
-                logger.warning("No summarized articles to check for duplicates")
-                return {
-                    **state,
-                    "deduplicated_articles": [],
-                    "status": "no_articles_to_deduplicate"
-                }
-            
-            # Initialize context analyzer if needed
-            if self.context_analyzer is None:
-                # Initialize embedding manager first if needed
-                if self.embedding_manager is None:
-                    self.embedding_manager = EmbeddingManager()
-                
-                self.context_analyzer = ContextAnalyzer(
-                    embedding_manager=self.embedding_manager,
-                    llm_router=self.llm_router
-                )
-            
-            # Multi-source consolidation (unchanged - already optimized)
-            logger.info(f"Performing multi-source consolidation on {len(summarized_articles)} articles")
-            # consolidate_similar_articles は同期関数なので await 不要
-            consolidated_articles = consolidate_similar_articles(
-                summarized_articles,
-                similarity_threshold=config.duplicate_similarity_threshold,
-            )
-            logger.info(f"After consolidation: {len(consolidated_articles)} articles remain")
-            
-            # Parallel processing setup
-            deduplicated_articles = []
-            duplicate_count = 0
-            update_count = 0
-            
-            # Adaptive batch sizing based on article count for optimal performance
-            article_count = len(consolidated_articles)
-            if article_count <= 5:
-                batch_size = min(PERFORMANCE['max_concurrent_llm'], article_count)
-            elif article_count <= 15:
-                batch_size = max(4, min(PERFORMANCE['max_concurrent_llm'] - 2, article_count // 2))
-            else:
-                batch_size = max(2, min(PERFORMANCE['max_concurrent_llm'] - 4, article_count // 4))
-            
-            logger.info(f"Using adaptive batch size: {batch_size} for {article_count} articles")
-            semaphore = asyncio.Semaphore(batch_size)
-            
-            async def process_with_semaphore(article):
-                async with semaphore:
-                    return await self.process_single_article_parallel(
-                        article, [p.summarized_article for p in deduplicated_articles]
-                    )
-            
-            # Create tasks for all articles
-            tasks = [process_with_semaphore(article) for article in consolidated_articles]
-            
-            # Execute in parallel with progress tracking
-            logger.info(f"Processing {len(tasks)} articles in parallel (max {batch_size} concurrent)")
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Process results and build final articles list
-            for result in results:
-                if isinstance(result, Exception):
-                    logger.error(f"Parallel processing exception: {result}")
-                    continue
-                
-                if not result.get('success', False):
-                    logger.warning(f"Article processing failed: {result.get('error', 'Unknown error')}")
-                    continue
-                
-                article = result['article']
-                duplicate_result = result['duplicate_result']
-                context_analysis = result['context_analysis']
-                japanese_title = result['japanese_title']
-                
-                # Handle duplicate check results
-                if duplicate_result and duplicate_result.is_duplicate:
-                    duplicate_count += 1
-                    logger.info(f"Article skipped as duplicate: {article.filtered_article.raw_article.id}")
-                    continue
-                
-                # Enhanced context analysis with multi-source summary generation
-                is_update = False
-                final_summary = ' '.join(article.summary.summary_points)
-                
-                if context_analysis:
-                    if context_analysis.decision == "SKIP":
-                        duplicate_count += 1
-                        logger.info(f"Article skipped by context analysis: {article.filtered_article.raw_article.id}")
-                        continue
-                    elif context_analysis.decision == "UPDATE":
-                        is_update = True
-                        update_count += 1
-                        
-                        # PRD準拠: 続報記事に🆙絵文字を追加 (F-16: 続報記事の可視化)
-                        current_title = article.filtered_article.raw_article.title
-                        if not current_title.startswith('🆙'):
-                            article.filtered_article.raw_article.title = f"🆙 {current_title}"
-                            logger.info(
-                                "Added 🆙 emoji to UPDATE article title",
-                                article_id=article.filtered_article.raw_article.id,
-                                updated_title=article.filtered_article.raw_article.title
-                            )
-                        
-                        # Generate enhanced contextual update summary
-                        try:
-                            enhanced_summary_points = await self._generate_contextual_update_summary(
-                                article, context_analysis
-                            )
-                            
-                            if enhanced_summary_points:
-                                # Update the article's summary with enhanced context
-                                from src.models.schemas import SummaryOutput
-                                original_summary = article.summary
-                                
-                                enhanced_summary = SummaryOutput(
-                                    summary_points=enhanced_summary_points,
-                                    confidence_score=min(original_summary.confidence_score + 0.15, 1.0),
-                                    source_reliability=original_summary.source_reliability,
-                                    model_used=original_summary.model_used + "_contextual",
-                                    fallback_used=original_summary.fallback_used,
-                                    total_tokens=original_summary.total_tokens,
-                                    processing_time_seconds=original_summary.processing_time_seconds
-                                )
-                                
-                                article.summary = enhanced_summary
-                                final_summary = ' '.join(enhanced_summary_points)
-                                
-                                logger.info(
-                                    "Enhanced UPDATE article with past context",
-                                    article_id=article.filtered_article.raw_article.id,
-                                    context_refs=len(context_analysis.references)
-                                )
-                            elif context_analysis.contextual_summary:
-                                # Fallback to context analyzer's summary
-                                final_summary = [context_analysis.contextual_summary]
-                                
-                        except Exception as context_error:
-                            logger.warning(
-                                "Failed to generate enhanced contextual summary, using fallback",
-                                article_id=article.filtered_article.raw_article.id,
-                                error=str(context_error)
-                            )
-                            if context_analysis.contextual_summary:
-                                final_summary = [context_analysis.contextual_summary]
-                        
-                        logger.info(f"Article marked as update: {article.filtered_article.raw_article.id}")
-                
-                # Handle Japanese title with fallback
-                if not japanese_title:
-                    # Skip title generation in workflow, let NewsletterGenerator handle it
-                    japanese_title = None  # Will be generated later in NewsletterGenerator
-                
-                # Create ProcessedArticle
-                processed_article = ProcessedArticle(
-                    summarized_article=article,
-                    duplicate_check=duplicate_result,
-                    context_analysis=context_analysis,
-                    final_summary=final_summary,
-                    japanese_title=japanese_title,
-                    is_update=is_update,
-                    citations=[]  # Will be filled later
-                )
-                
-                deduplicated_articles.append(processed_article)
-            
-            processing_time = time.time() - start_time
-            
-            # Log processing results
-            log_entry = ProcessingLog(
-                processing_id=config.processing_id,
-                timestamp=time.time(),
-                stage="check_duplicates_context_parallel",
-                event_type="info",
-                message=f"Parallel processed {len(deduplicated_articles)} articles, removed {duplicate_count} duplicates, found {update_count} updates",
-                data={
-                    "input_articles": len(summarized_articles),
-                    "output_articles": len(deduplicated_articles),
-                    "duplicates_removed": duplicate_count,
-                    "updates_found": update_count,
-                    "duplicate_rate": duplicate_count / len(summarized_articles) if summarized_articles else 0,
-                    "parallel_processing_time": processing_time,
-                    "articles_per_second": len(consolidated_articles) / processing_time if processing_time > 0 else 0
-                },
-                duration_seconds=processing_time
-            )
-            
-            logger.info(
-                f"Parallel processing completed in {processing_time:.2f}s "
-                f"({len(consolidated_articles) / processing_time:.1f} articles/sec)"
-            )
-            
-            return {
-                **state,
-                "deduplicated_articles": deduplicated_articles,
-                "processing_logs": state["processing_logs"] + [log_entry],
-                "status": "duplicates_and_context_checked_parallel"
-            }
-            
-        except Exception as e:
-            logger.error("Parallel check duplicates and context node failed", error=str(e))
-            
-            error_log = ProcessingLog(
-                processing_id=state["config"].processing_id,
-                timestamp=time.time(),
-                stage="check_duplicates_context_parallel",
-                event_type="error",
-                message=f"Failed to check duplicates and context in parallel: {str(e)}",
-                duration_seconds=time.time() - start_time
-            )
-            
-            return {
-                **state,
-                "deduplicated_articles": [],
-                "processing_logs": state["processing_logs"] + [error_log],
-                "status": "deduplication_context_parallel_failed"
-            }
     
     async def cluster_topics_node(self, state: Dict) -> Dict:
         """Cluster articles by topic with Phase 3 advanced clustering."""
         
         logger.info("Starting advanced topic clustering node")
         start_time = time.time()
+        
+        try:
+            config = state["config"]
+            deduplicated_articles = state["deduplicated_articles"]
+            
+            if not deduplicated_articles:
+                logger.warning("No deduplicated articles to cluster")
+                return {
+                    **state,
+                    "clustered_articles": [],
+                    "status": "no_articles_to_cluster"
+                }
+            
+            # Phase 3: Multi-source topic prioritization with clustering
+            clustered_articles = await cluster_articles_with_multi_source_priority(
+                articles=deduplicated_articles,
+                max_articles_target=12,  # Increased from 10 to 12 for better coverage
+            )
+            
+            # Generate proper citations for all clustered articles
+            logger.info("Generating citations for clustered articles")
+            citation_start_time = time.time()
+            
+            # Import citation generation function
+            from src.utils.citation_generator import enhance_articles_with_citations_parallel, CitationGenerator
+            
+            # Reset URL tracking for newsletter-wide citation deduplication
+            citation_deduplicator = CitationGenerator()
+            citation_deduplicator.reset_url_tracking()
+            logger.info("Citation URL tracking reset for new newsletter generation")
+            
+            # PRD F-15準拠: クラスタ情報を活用した引用生成
+            from src.utils.citation_generator import CitationGenerator
+            citation_generator = CitationGenerator()
+            
+            # 各記事にクラスタ内の関連記事情報を渡して引用生成
+            for i, article in enumerate(clustered_articles):
+                try:
+                    # 同じクラスタの他の記事を関連記事として使用
+                    cluster_articles = [other for j, other in enumerate(clustered_articles) if i != j]
+                    
+                    # PRD F-15: 実際のクラスタ記事を使用した引用生成
+                    citations = await citation_generator.generate_citations(
+                        article=article,
+                        cluster_articles=cluster_articles[:4],  # 最大4記事をクラスタソースとして使用
+                        max_citations=3
+                    )
+                    
+                    # 引用を記事に設定
+                    article.citations = citations
+                    
+                    logger.info(
+                        f"Generated {len(citations)} cluster-based citations for article",
+                        article_id=article.summarized_article.filtered_article.raw_article.id,
+                        cluster_size=len(cluster_articles),
+                        citation_details=[{
+                            'source': c.source_name, 
+                            'title': c.title[:50] + "..." if len(c.title) > 50 else c.title
+                        } for c in citations] if citations else []
+                    )
+                    
+                except Exception as e:
+                    logger.error(
+                        f"Failed to generate cluster citations for article {i}: {e}",
+                        article_id=getattr(article.summarized_article.filtered_article.raw_article, 'id', 'unknown')
+                    )
+                    # Assign empty citations on failure
+                    article.citations = []
+            
+            citation_time = time.time() - citation_start_time
+            logger.info(f"Citation generation completed in {citation_time:.2f}s")
+            
+            # Validate article count and apply PRD compliance if needed
+            max_newsletter_articles = min(config.max_items, 10)  # PRD F-5: 最大10件
+            
+            if len(clustered_articles) > max_newsletter_articles:
+                # Sort by relevance and take top articles
+                def sort_key(article):
+                    relevance = article.summarized_article.filtered_article.ai_relevance_score
+                    confidence = article.summarized_article.summary.confidence_score
+                    citation_count = len(getattr(article, 'citations', []))
+                    return (relevance * 0.4 + confidence * 0.4 + citation_count * 0.1, -len(article.summarized_article.summary.summary_points))
+                
+                clustered_articles.sort(key=sort_key, reverse=True)
+                clustered_articles = clustered_articles[:max_newsletter_articles]
+                
+                logger.info(
+                    f"Trimmed articles to meet PRD limit",
+                    final_count=len(clustered_articles),
+                    max_allowed=max_newsletter_articles
+                )
+            
+            # PRD F-5: 7-10記事の確保（不足時は追加）
+            if len(clustered_articles) < 7 and len(deduplicated_articles) > len(clustered_articles):
+                logger.warning("Article count below PRD minimum (7), adding additional articles")
+                
+                # Get articles not in clustered_articles
+                clustered_ids = {a.summarized_article.filtered_article.raw_article.id for a in clustered_articles}
+                remaining_articles = [
+                    a for a in deduplicated_articles 
+                    if a.summarized_article.filtered_article.raw_article.id not in clustered_ids
+                ]
+                
+                if remaining_articles:
+                    additional_needed = min(7 - len(clustered_articles), len(remaining_articles))
+                    logger.info(
+                        f"Adding {additional_needed} articles to meet PRD requirement",
+                        current_count=len(clustered_articles),
+                        target_count=7
+                    )
+                    
+                    additional_articles = remaining_articles[:additional_needed]
+                    clustered_articles.extend(additional_articles)
+                    
+                    logger.info(
+                        f"Added {len(additional_articles)} articles to meet PRD requirement",
+                        final_count=len(clustered_articles),
+                        prd_compliance=len(clustered_articles) >= 7
+                    )
+            
+            # PRD準拠: 最終コンプライアンスチェック
+            compliance_result = self._validate_prd_compliance(clustered_articles)
+            
+            processing_time = time.time() - start_time
+            
+            # Log processing
+            log_entry = ProcessingLog(
+                processing_id=config.processing_id,
+                timestamp=time.time(),
+                stage="cluster_topics_advanced",
+                event_type="info",
+                message=f"Advanced clustering completed with {len(clustered_articles)} articles",
+                data={
+                    "input_articles": len(deduplicated_articles),
+                    "output_articles": len(clustered_articles),
+                    "max_newsletter_articles": max_newsletter_articles,
+                    "citations_generated": sum(len(a.citations) for a in clustered_articles),
+                    "validation_enabled": True
+                },
+                duration_seconds=processing_time
+            )
+            
+            return {
+                **state,
+                "clustered_articles": clustered_articles,
+                "processing_logs": state["processing_logs"] + [log_entry],
+                "status": "topics_clustered_advanced"
+            }
+            
+        except Exception as e:
+            logger.error("Advanced topic clustering failed", error=str(e))
+            
+            # Fallback to simple clustering
+            try:
+                logger.info("Falling back to simple clustering")
+                
+                def sort_key(article):
+                    relevance = article.summarized_article.filtered_article.ai_relevance_score
+                    confidence = article.summarized_article.summary.confidence_score
+                    return (relevance * 0.6 + confidence * 0.4)
+                
+                sorted_articles = sorted(deduplicated_articles, key=sort_key, reverse=True)
+                max_articles = min(len(sorted_articles), config.max_items, 10)
+                fallback_articles = sorted_articles[:max_articles]
+                
+                # Add empty citations for fallback
+                for article in fallback_articles:
+                    if not hasattr(article, 'citations') or not article.citations:
+                        article.citations = []
+                
+                logger.info(f"Fallback clustering produced {len(fallback_articles)} articles")
+                
+                fallback_log = ProcessingLog(
+                    processing_id=config.processing_id,
+                    timestamp=time.time(),
+                    stage="cluster_topics_fallback",
+                    event_type="warning",
+                    message=f"Fallback clustering completed with {len(fallback_articles)} articles",
+                    data={
+                        "input_articles": len(deduplicated_articles),
+                        "output_articles": len(fallback_articles),
+                        "fallback_reason": str(e)
+                    },
+                    duration_seconds=time.time() - start_time
+                )
+                
+                return {
+                    **state,
+                    "clustered_articles": fallback_articles,
+                    "processing_logs": state["processing_logs"] + [fallback_log],
+                    "status": "topics_clustered_fallback"
+                }
+                
+            except Exception as fallback_error:
+                logger.error("Fallback clustering also failed", error=str(fallback_error))
+                
+                error_log = ProcessingLog(
+                    processing_id=config.processing_id,
+                    timestamp=time.time(),
+                    stage="cluster_topics",
+                    event_type="error",
+                    message=f"Both advanced and fallback clustering failed: {str(fallback_error)}",
+                    duration_seconds=time.time() - start_time
+                )
+                
+                return {
+                    **state,
+                    "clustered_articles": [],
+                    "processing_logs": state["processing_logs"] + [error_log],
+                    "status": "cluster_topics_failed"
+                }
         
         try:
             config = state["config"]
@@ -1233,6 +1002,9 @@ class NewsletterWorkflow:
                 articles_after_validation=len(clustered_articles)
             )
             
+            # F-17: Save cluster relationships to database before finalizing
+            await self._save_cluster_relationships(clustered_articles)
+            
             # PRD準拠: F-5「上位10件までをニュースレター本文に整形」
             max_newsletter_articles = min(10, len(clustered_articles))
             clustered_articles = clustered_articles[:max_newsletter_articles]
@@ -1369,6 +1141,153 @@ class NewsletterWorkflow:
                     "status": "clustering_failed"
                 }
     
+    async def process_images_node(self, state: Dict) -> Dict:
+        """Process images for articles (Phase 3: Image Integration)."""
+        
+        logger.info("Starting image processing node")
+        start_time = time.time()
+        
+        try:
+            config = state["config"]
+            clustered_articles = state["clustered_articles"]
+            
+            if not clustered_articles:
+                logger.warning("No clustered articles to process images for")
+                return {
+                    **state,
+                    "image_processed_articles": [],
+                    "status": "no_articles_for_images"
+                }
+            
+            # Initialize image processor lazily
+            if self.image_processor is None:
+                try:
+                    self.image_processor = ImageProcessor()
+                    logger.info("ImageProcessor initialized successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize ImageProcessor: {e}")
+                    # Continue without image processing
+                    return {
+                        **state,
+                        "image_processed_articles": clustered_articles,
+                        "status": "image_processor_disabled"
+                    }
+            
+            # Process images for articles
+            logger.info(f"Processing images for {len(clustered_articles)} articles")
+            
+            # Use concurrent processing for better performance
+            processed_articles = []
+            max_concurrent = min(5, len(clustered_articles))  # Limit concurrency
+            
+            # Process articles in batches to avoid overwhelming the system
+            import asyncio
+            semaphore = asyncio.Semaphore(max_concurrent)
+            
+            async def process_single_article(article: ProcessedArticle) -> ProcessedArticle:
+                """Process image for a single article."""
+                async with semaphore:
+                    try:
+                        # Get article URL
+                        article_url = article.summarized_article.filtered_article.raw_article.url
+                        article_id = article.summarized_article.filtered_article.raw_article.id
+                        
+                        logger.debug(f"Processing image for article: {article_id}")
+                        
+                        # Process image (this is synchronous but wrapped in executor)
+                        loop = asyncio.get_event_loop()
+                        image_result = await loop.run_in_executor(
+                            None,
+                            self.image_processor.process_article_image,
+                            article_url,
+                            article_id
+                        )
+                        
+                        if image_result:
+                            # Update article with image information
+                            article.image_url = image_result['image_url']
+                            article.image_metadata = {
+                                'source_type': image_result['source_type'],
+                                'dimensions': image_result['dimensions'],
+                                'file_size': image_result['file_size'],
+                                'original_url': image_result['original_url']
+                            }
+                            
+                            logger.info(
+                                f"Successfully processed image for article {article_id}",
+                                image_url=image_result['image_url'],
+                                source_type=image_result['source_type']
+                            )
+                        else:
+                            logger.debug(f"No image found for article: {article_id}")
+                            # Keep article without image
+                        
+                        return article
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to process image for article {getattr(article.summarized_article.filtered_article.raw_article, 'id', 'unknown')}: {e}")
+                        # Return article without image on error
+                        return article
+            
+            # Process all articles concurrently
+            tasks = [process_single_article(article) for article in clustered_articles]
+            processed_articles = await asyncio.gather(*tasks, return_exceptions=False)
+            
+            # Count successful image processing
+            articles_with_images = sum(1 for article in processed_articles if getattr(article, 'image_url', None))
+            
+            processing_time = time.time() - start_time
+            
+            logger.info(
+                f"Image processing completed",
+                total_articles=len(processed_articles),
+                articles_with_images=articles_with_images,
+                processing_time=f"{processing_time:.2f}s"
+            )
+            
+            # Log processing summary
+            log_entry = ProcessingLog(
+                processing_id=config.processing_id,
+                timestamp=time.time(),
+                stage="process_images",
+                event_type="info",
+                message=f"Processed images for {len(processed_articles)} articles ({articles_with_images} with images)",
+                duration_seconds=processing_time,
+                metadata={
+                    "total_articles": len(processed_articles),
+                    "articles_with_images": articles_with_images,
+                    "image_success_rate": f"{(articles_with_images/len(processed_articles)*100):.1f}%" if processed_articles else "0%"
+                }
+            )
+            
+            return {
+                **state,
+                "image_processed_articles": processed_articles,
+                "processing_logs": state["processing_logs"] + [log_entry],
+                "status": "images_processed"
+            }
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            logger.error(f"Image processing node failed: {e}")
+            
+            # Return original articles without images on failure
+            error_log = ProcessingLog(
+                processing_id=state["config"].processing_id,
+                timestamp=time.time(),
+                stage="process_images",
+                event_type="error",
+                message=f"Image processing failed: {str(e)}",
+                duration_seconds=processing_time
+            )
+            
+            return {
+                **state,
+                "image_processed_articles": state["clustered_articles"],
+                "processing_logs": state["processing_logs"] + [error_log],
+                "status": "image_processing_failed"
+            }
+    
     async def generate_newsletter_node(self, state: Dict) -> Dict:
         """Generate final Markdown newsletter."""
         
@@ -1377,9 +1296,10 @@ class NewsletterWorkflow:
         
         try:
             config = state["config"]
-            clustered_articles = state["clustered_articles"]
+            # Use image_processed_articles if available, fall back to clustered_articles
+            articles = state.get("image_processed_articles", state.get("clustered_articles", []))
             
-            if not clustered_articles:
+            if not articles:
                 logger.warning("No clustered articles to generate newsletter")
                 
                 # Create empty newsletter
@@ -1394,13 +1314,13 @@ class NewsletterWorkflow:
             # Prepare processing summary
             processing_summary = {
                 "articles_processed": len(state.get("summarized_articles", [])),
-                "articles_final": len(clustered_articles),
+                "articles_final": len(articles),
                 "processing_time_seconds": sum(
                     log.duration_seconds or 0 
                     for log in state["processing_logs"]
                 ),
                 "success_rate": (
-                    len(clustered_articles) / len(state.get("raw_articles", [1])) * 100
+                    len(articles) / len(state.get("raw_articles", [1])) * 100
                 )
             }
             
@@ -1410,7 +1330,7 @@ class NewsletterWorkflow:
             
             generator = NewsletterGenerator(templates_dir="src/templates")
             newsletter_output = await generator.generate_newsletter(
-                articles=clustered_articles,
+                articles=articles,
                 edition=config.edition,
                 processing_summary=processing_summary,
                 output_dir=config.output_dir
@@ -1424,9 +1344,9 @@ class NewsletterWorkflow:
                 timestamp=time.time(),
                 stage="generate_newsletter",
                 event_type="info",
-                message=f"Generated newsletter with {len(clustered_articles)} articles",
+                message=f"Generated newsletter with {len(articles)} articles",
                 data={
-                    "articles_count": len(clustered_articles),
+                    "articles_count": len(articles),
                     "word_count": newsletter_output.word_count,
                     "output_file": newsletter_output.metadata.get("output_file")
                 },
@@ -1485,7 +1405,7 @@ class NewsletterWorkflow:
                 try:
                     await save_newsletter_to_supabase(
                         processing_id=config.processing_id,
-                        articles=clustered_articles,
+                        articles=articles,
                         newsletter_content=newsletter_output.metadata.get("output_file", ""),
                         processing_logs=state["processing_logs"] + [log_entry],
                         metadata=newsletter_output.metadata,
@@ -1493,6 +1413,9 @@ class NewsletterWorkflow:
                     )
                 except Exception as e:
                     logger.warning("Failed to save to Supabase", error=str(e))
+            
+            # Cleanup resources to prevent memory leaks
+            self._cleanup_workflow_resources()
             
             return {
                 **state,
@@ -1504,6 +1427,9 @@ class NewsletterWorkflow:
             
         except Exception as e:
             logger.error("Generate newsletter node failed", error=str(e))
+            
+            # Cleanup resources even on failure
+            self._cleanup_workflow_resources()
             
             error_log = ProcessingLog(
                 processing_id=state["config"].processing_id,
@@ -1614,6 +1540,55 @@ class NewsletterWorkflow:
                 "processing_logs": state["processing_logs"] + [error_log],
                 "status": "quaily_publish_failed",
             }
+    
+    def _sort_articles_by_priority(self, articles: List) -> List:
+        """
+        Sort articles by source priority.
+        
+        優先順位:
+        1. 公式リリース系 (priority: 1) - 最上位
+        2. ニュースレター系 (priority: 2) - 次点
+        3. メディア・YouTube系 (priority: 3) - 同列  
+        4. 日本語系ソース (priority: 4) - 最下位
+        
+        Args:
+            articles: 記事リスト
+            
+        Returns:
+            優先順位順にソートされた記事リスト
+        """
+        from src.constants.source_priorities import get_source_priority, get_priority_description
+        
+        def get_sort_key(article):
+            """Get sorting key for article (priority, then published_date desc)"""
+            # Ensure source_priority is set
+            if not hasattr(article, 'source_priority') or article.source_priority is None:
+                article.set_source_priority()
+            
+            # Sort by priority (ascending = higher priority first), then by date (descending = newest first)
+            return (article.source_priority, -article.published_date.timestamp())
+        
+        sorted_articles = sorted(articles, key=get_sort_key)
+        
+        # Log priority distribution for monitoring
+        priority_counts = {}
+        for article in sorted_articles:
+            priority = getattr(article, 'source_priority', 3)
+            priority_desc = get_priority_description(priority)
+            priority_counts[priority_desc] = priority_counts.get(priority_desc, 0) + 1
+        
+        logger.info(
+            "Article priority distribution after sorting",
+            total_articles=len(sorted_articles),
+            priority_distribution=priority_counts,
+            top_sources=[{
+                "source_id": article.source_id,
+                "priority": getattr(article, 'source_priority', 3),
+                "title": article.title[:50] + "..." if len(article.title) > 50 else article.title
+            } for article in sorted_articles[:5]]  # Log top 5 articles
+        )
+        
+        return sorted_articles
 
     async def _generate_contextual_update_summary(
         self,
@@ -1830,6 +1805,454 @@ class NewsletterWorkflow:
         
         return compliance_result
 
+    # Refactored methods for check_duplicates_node
+    async def _consolidate_duplicates(self, summarized_articles: List) -> List:
+        """Phase 1: Intelligent duplicate consolidation."""
+        logger.info("Phase 1: Intelligent duplicate consolidation")
+        
+        # Use enhanced consolidation with lowered thresholds
+        settings = get_settings()
+        consolidation_threshold = settings.embedding.duplicate_similarity_threshold
+        # Lower the threshold for consolidation to catch more related articles
+        adjusted_threshold = max(
+            settings.embedding.minimum_consolidation_threshold, 
+            consolidation_threshold - settings.embedding.consolidation_threshold_adjustment
+        )
+        
+        # consolidate_similar_articles は同期関数なので await 不要
+        consolidated_articles = consolidate_similar_articles(
+            articles=summarized_articles,
+            jaccard_threshold=adjusted_threshold,
+            sequence_threshold=adjusted_threshold,
+            consolidation_mode=True
+        )
+        
+        consolidation_stats = {
+            "input_articles": len(summarized_articles),
+            "output_articles": len(consolidated_articles),
+            "articles_consolidated": len(summarized_articles) - len(consolidated_articles)
+        }
+        
+        logger.info("Duplicate consolidation completed", **consolidation_stats)
+        return consolidated_articles
+
+    async def _process_articles_with_context(self, consolidated_articles: List) -> tuple:
+        """Phase 2: Context analysis and article processing."""
+        logger.info("Phase 2: Context analysis and article processing")
+        
+        # Initialize context analyzer if needed
+        if self.context_analyzer is None:
+            if self.embedding_manager is None:
+                self.embedding_manager = EmbeddingManager()
+            
+            self.context_analyzer = ContextAnalyzer(
+                embedding_manager=self.embedding_manager,
+                llm_router=self.llm_router
+            )
+        
+        deduplicated_articles = []
+        duplicate_count = 0
+        update_count = 0
+        
+        for article in consolidated_articles:
+            try:
+                processed_article, is_duplicate, is_update = await self._process_single_article_for_duplicates(
+                    article, deduplicated_articles
+                )
+                
+                if processed_article:
+                    deduplicated_articles.append(processed_article)
+                    if is_update:
+                        update_count += 1
+                elif is_duplicate:
+                    duplicate_count += 1
+                    
+            except Exception as e:
+                logger.error(
+                    "Error processing article for duplicates/context",
+                    article_id=article.filtered_article.raw_article.id,
+                    error=str(e)
+                )
+                continue
+        
+        return deduplicated_articles, duplicate_count, update_count
+
+    async def _process_single_article_for_duplicates(self, article, existing_articles: List) -> tuple:
+        """Process a single article for duplicates and context analysis."""
+        # Check for duplicates using BasicDuplicateChecker as primary method
+        duplicate_result = self.duplicate_checker.check_duplicate(
+            current_article=article,
+            past_articles=[p.summarized_article for p in existing_articles]
+        )
+        
+        if duplicate_result.is_duplicate:
+            logger.info(
+                "Duplicate article filtered out by basic checker",
+                article_id=article.filtered_article.raw_article.id,
+                similarity_score=duplicate_result.similarity_score
+            )
+            return None, True, False
+        
+        # Context analysis for UPDATE detection and relationship building (not for SKIP decisions)
+        context_analysis = await self._analyze_context_for_article(article)
+        is_update = False
+        
+        # Apply context analysis results - ONLY for UPDATE detection, not SKIP
+        if context_analysis:
+            # CRITICAL: Remove SKIP logic to prevent double elimination
+            # Only process UPDATE decisions from context analysis
+            if context_analysis.decision == "UPDATE" and context_analysis.references:
+                is_update = await self._apply_context_analysis_to_article(article, context_analysis)
+                logger.info(
+                    "Article marked as UPDATE by context analysis",
+                    article_id=article.filtered_article.raw_article.id,
+                    references_count=len(context_analysis.references)
+                )
+        
+        # Create processed article
+        processed_article = ProcessedArticle(
+            summarized_article=article,
+            duplicate_check=duplicate_result,
+            context_analysis=context_analysis,
+            final_summary=' '.join(article.summary.summary_points),  # Join summary points into string
+            japanese_title=None,  # Will be generated later in NewsletterGenerator
+            citations=[],  # Citations will be generated later
+            is_update=is_update
+        )
+        
+        # Add to embedding index and save to Supabase
+        await self._save_article_data_to_storage(article, processed_article, is_update, context_analysis)
+        
+        return processed_article, False, is_update
+
+    async def _analyze_context_for_article(self, article):
+        """Analyze context for a single article."""
+        if not self.context_analyzer:
+            return None
+            
+        try:
+            settings = get_settings()
+            
+            # Debug: Check if embedding manager has data
+            if self.embedding_manager:
+                total_vectors = getattr(self.embedding_manager, 'total_vectors', 0)
+                logger.info(f"EmbeddingManager has {total_vectors} past articles for context analysis")
+            
+            context_analysis = await self.context_analyzer.analyze_context(
+                current_article=article,
+                max_similar_articles=5,
+                similarity_threshold=settings.embedding.context_similarity_threshold
+            )
+            
+            # Debug: Log context analysis results
+            if context_analysis:
+                logger.info(
+                    f"Context analysis completed for article {article.filtered_article.raw_article.id}: "
+                    f"decision={context_analysis.decision}, "
+                    f"references={len(context_analysis.references) if context_analysis.references else 0}"
+                )
+            else:
+                logger.warning(f"Context analysis returned None for article {article.filtered_article.raw_article.id}")
+            
+            return context_analysis
+        except Exception as e:
+            logger.warning(
+                "Context analysis failed, proceeding with standard processing",
+                article_id=article.filtered_article.raw_article.id,
+                error=str(e)
+            )
+            return None
+
+    async def _apply_context_analysis_to_article(self, article, context_analysis) -> bool:
+        """Apply context analysis results to an article."""
+        is_update = False
+        
+        if context_analysis.decision == "UPDATE":
+            is_update = True
+            
+            # 🔥 ULTRA THINK: 🆙絵文字はnewsletter_generatorで統合処理
+            # 重複防止のためworkflowでの付与を削除
+            logger.info(
+                "Marked article as UPDATE in workflow - emoji handling delegated to title generation",
+                article_id=article.filtered_article.raw_article.id
+            )
+            
+            # Generate context-aware summary if available
+            if context_analysis.contextual_summary:
+                enhanced_summary_points = await self._generate_contextual_update_summary(
+                    article, context_analysis
+                )
+                
+                if enhanced_summary_points:
+                    # Update the article's summary
+                    from src.models.schemas import SummaryOutput
+                    original_summary = article.summary
+                    
+                    enhanced_summary = SummaryOutput(
+                        summary_points=enhanced_summary_points,
+                        confidence_score=min(original_summary.confidence_score + 0.15, 1.0),
+                        source_reliability=original_summary.source_reliability,
+                        model_used=original_summary.model_used + "_contextual",
+                        fallback_used=original_summary.fallback_used,
+                        total_tokens=original_summary.total_tokens,
+                        processing_time_seconds=original_summary.processing_time_seconds
+                    )
+                    
+                    article.summary = enhanced_summary
+                    
+                    logger.info(
+                        "Enhanced UPDATE article with past context",
+                        article_id=article.filtered_article.raw_article.id,
+                        context_refs=len(context_analysis.references)
+                    )
+        
+        elif context_analysis.decision == "KEEP" and context_analysis.references:
+            # メタデータとして文脈情報を保存
+            if not hasattr(article, 'context_metadata'):
+                article.context_metadata = {}
+            
+            article.context_metadata.update({
+                'related_articles': context_analysis.references[:3],
+                'context_reasoning': context_analysis.reasoning,
+                'similarity_score': context_analysis.similarity_score
+            })
+            
+            logger.info(
+                "Added context metadata to KEEP article",
+                article_id=article.filtered_article.raw_article.id,
+                related_count=len(context_analysis.references)
+            )
+        
+        return is_update
+
+    async def _save_article_data_to_storage(self, article, processed_article, is_update: bool, context_analysis):
+        """Save article data to embedding index and Supabase."""
+        # Add to embedding index for future context analysis
+        try:
+            await self.embedding_manager.add_article(article, save_immediately=False)
+        except Exception as embedding_error:
+            logger.warning(
+                "Failed to add article to embedding index",
+                article_id=article.filtered_article.raw_article.id,
+                error=str(embedding_error)
+            )
+        
+        # Save to Supabase contextual_articles
+        await self._save_article_to_supabase(article, processed_article, is_update, context_analysis)
+
+    async def _save_article_to_supabase(self, article, processed_article, is_update: bool, context_analysis):
+        """Save article and relationships to Supabase."""
+        try:
+            from src.utils.supabase_client import save_contextual_article, save_article_relationship
+            
+            # Generate embedding for Supabase
+            embedding_text = f"{article.filtered_article.raw_article.title}\n{article.filtered_article.raw_article.content}\n" + "\n".join(article.summary.summary_points)
+            embedding_vector = await self.embedding_manager.generate_embedding(embedding_text)
+            
+            # Save contextual article
+            article_uuid = await save_contextual_article(
+                article=processed_article,
+                embedding=embedding_vector.tolist() if embedding_vector is not None else None,
+                topic_cluster=None  # Will be set in clustering phase
+            )
+            
+            # Save relationships if this is an update
+            if is_update and context_analysis and context_analysis.references and article_uuid:
+                await self._save_supabase_relationships(article_uuid, context_analysis)
+            
+            logger.info(
+                "Saved article to Supabase",
+                article_id=article.filtered_article.raw_article.id,
+                article_uuid=article_uuid,
+                is_update=is_update
+            )
+            
+        except Exception as supabase_error:
+            logger.warning(
+                "Failed to save article to Supabase",
+                article_id=article.filtered_article.raw_article.id,
+                error=str(supabase_error)
+            )
+
+    async def _save_supabase_relationships(self, article_uuid: str, context_analysis):
+        """Save article relationships to Supabase (F-17 implementation)."""
+        for ref_article_id in context_analysis.references[:3]:  # Limit to 3 relationships
+            try:
+                from src.utils.supabase_client import get_supabase_client, save_article_relationship
+                client = await get_supabase_client()
+                if client.is_available():
+                    ref_result = client.client.table("contextual_articles").select("id").eq(
+                        "article_id", ref_article_id
+                    ).execute()
+                    
+                    if ref_result.data:
+                        ref_uuid = ref_result.data[0]["id"]
+                        
+                        # F-17: Determine relationship type based on context analysis decision
+                        relationship_type = "related"  # Default
+                        if context_analysis.decision == "UPDATE":
+                            relationship_type = "update"
+                        elif context_analysis.similarity_score > 0.8:
+                            relationship_type = "sequel"
+                        
+                        await save_article_relationship(
+                            parent_article_uuid=ref_uuid,
+                            child_article_uuid=article_uuid,
+                            relationship_type=relationship_type,
+                            similarity_score=context_analysis.similarity_score,
+                            reasoning=f"Context analysis: {context_analysis.reasoning}"
+                        )
+                        
+                        logger.info(
+                            "F-17: Saved article relationship",
+                            parent_article_id=ref_article_id,
+                            child_article_uuid=article_uuid,
+                            relationship_type=relationship_type,
+                            similarity_score=context_analysis.similarity_score
+                        )
+            except Exception as e:
+                logger.warning(f"Failed to save relationship for {ref_article_id}: {e}")
+
+    async def _save_cluster_relationships(self, clustered_articles: List):
+        """Save topic cluster relationships to Supabase (F-17 enhancement)."""
+        try:
+            from src.utils.supabase_client import get_supabase_client, save_article_relationship
+            client = await get_supabase_client()
+            
+            if not client.is_available():
+                return
+            
+            # Group articles by cluster_id
+            clusters = {}
+            for article in clustered_articles:
+                cluster_id = getattr(article, 'cluster_id', None)
+                if cluster_id is not None:
+                    if cluster_id not in clusters:
+                        clusters[cluster_id] = []
+                    clusters[cluster_id].append(article)
+            
+            relationship_count = 0
+            
+            # For each cluster with multiple articles, record relationships
+            for cluster_id, articles in clusters.items():
+                if len(articles) < 2:
+                    continue
+                
+                # Get article UUIDs from Supabase
+                article_uuids = {}
+                for article in articles:
+                    article_id = article.summarized_article.filtered_article.raw_article.id
+                    try:
+                        result = client.client.table("contextual_articles").select("id").eq(
+                            "article_id", article_id
+                        ).execute()
+                        
+                        if result.data:
+                            article_uuids[article_id] = result.data[0]["id"]
+                    except Exception as e:
+                        logger.warning(f"Failed to get UUID for article {article_id}: {e}")
+                
+                # Record relationships between articles in the same cluster
+                article_list = list(article_uuids.items())
+                for i, (article_id_1, uuid_1) in enumerate(article_list):
+                    for j, (article_id_2, uuid_2) in enumerate(article_list[i+1:], i+1):
+                        try:
+                            # Calculate similarity score based on cluster confidence
+                            # For now, use a default value since we don't have precise scores
+                            similarity_score = 0.75  # Default cluster similarity
+                            
+                            await save_article_relationship(
+                                parent_article_uuid=uuid_1,
+                                child_article_uuid=uuid_2,
+                                relationship_type="related",
+                                similarity_score=similarity_score,
+                                reasoning=f"Topic cluster {cluster_id}: Articles grouped together by semantic similarity"
+                            )
+                            relationship_count += 1
+                            
+                        except Exception as e:
+                            logger.warning(f"Failed to save cluster relationship: {e}")
+            
+            if relationship_count > 0:
+                logger.info(
+                    "F-17: Saved topic cluster relationships",
+                    clusters_processed=len(clusters),
+                    relationships_created=relationship_count
+                )
+                
+        except Exception as e:
+            logger.warning(f"Failed to save cluster relationships: {e}")
+
+    def _log_duplicate_processing_results(self, config, input_articles: List, output_articles: List, 
+                             duplicate_count: int, update_count: int, processing_time: float) -> ProcessingLog:
+        """Create processing log for duplicate checking results."""
+        return ProcessingLog(
+            processing_id=config.processing_id,
+            timestamp=time.time(),
+            stage="check_duplicates_context",
+            event_type="info",
+            message=f"Processed {len(output_articles)} articles, removed {duplicate_count} duplicates, found {update_count} updates",
+            data={
+                "input_articles": len(input_articles),
+                "output_articles": len(output_articles),
+                "duplicates_removed": duplicate_count,
+                "updates_found": update_count,
+                "duplicate_rate": duplicate_count / len(input_articles) if input_articles else 0
+            },
+            duration_seconds=processing_time
+        )
+    
+    def _cleanup_workflow_resources(self) -> None:
+        """
+        Clean up workflow resources to prevent memory leaks.
+        
+        This method should be called at the end of newsletter generation
+        to free up memory used by various components.
+        """
+        try:
+            # Get memory stats before cleanup
+            memory_stats_before = {}
+            
+            # Cleanup EmbeddingManager
+            if hasattr(self, 'embedding_manager') and self.embedding_manager:
+                memory_stats_before = self.embedding_manager.get_memory_usage_stats()
+                self.embedding_manager.cleanup_resources()
+                logger.info("EmbeddingManager resources cleaned up")
+            
+            # Cleanup ContextAnalyzer if it exists
+            if hasattr(self, 'context_analyzer') and self.context_analyzer:
+                # Reset context analyzer state
+                self.context_analyzer = None
+                logger.info("ContextAnalyzer resources cleaned up")
+            
+            # Cleanup LLM Router clients cache
+            if hasattr(self, 'llm_router') and self.llm_router:
+                if hasattr(self.llm_router, '_clients'):
+                    client_count = len(self.llm_router._clients)
+                    self.llm_router._clients.clear()
+                    logger.info(f"Cleared {client_count} LLM client cache entries")
+            
+            # Cleanup DuplicateChecker cache
+            if hasattr(self, 'duplicate_checker') and self.duplicate_checker:
+                # If there's any internal cache, clear it
+                if hasattr(self.duplicate_checker, '_article_cache'):
+                    self.duplicate_checker._article_cache.clear()
+                logger.info("DuplicateChecker cache cleaned up")
+            
+            # Log memory savings
+            if memory_stats_before:
+                logger.info(
+                    "Workflow cleanup completed",
+                    metadata_entries_cleared=memory_stats_before.get("metadata_count", 0),
+                    vectors_cleared=memory_stats_before.get("index_total_vectors", 0),
+                    estimated_memory_freed_mb=memory_stats_before.get("estimated_index_memory_bytes", 0) / (1024 * 1024)
+                )
+            else:
+                logger.info("Workflow cleanup completed")
+                
+        except Exception as e:
+            logger.warning(f"Error during workflow cleanup: {e}")
+
 
 def create_newsletter_workflow() -> StateGraph:
     """Create and compile the newsletter generation workflow."""
@@ -1843,8 +2266,9 @@ def create_newsletter_workflow() -> StateGraph:
     workflow.add_node("fetch_sources", workflow_instance.fetch_sources_node)
     workflow.add_node("filter_ai_content", workflow_instance.filter_ai_content_node)
     workflow.add_node("generate_summaries", workflow_instance.generate_summaries_node)
-    workflow.add_node("check_duplicates", workflow_instance.check_duplicates_node_parallel)
+    workflow.add_node("check_duplicates", workflow_instance.check_duplicates_node)
     workflow.add_node("cluster_topics", workflow_instance.cluster_topics_node)
+    workflow.add_node("process_images", workflow_instance.process_images_node)
     workflow.add_node("generate_newsletter", workflow_instance.generate_newsletter_node)
     workflow.add_node("publish_to_quaily", workflow_instance.publish_to_quaily_node)
     
@@ -1853,7 +2277,8 @@ def create_newsletter_workflow() -> StateGraph:
     workflow.add_edge("filter_ai_content", "generate_summaries")
     workflow.add_edge("generate_summaries", "check_duplicates")
     workflow.add_edge("check_duplicates", "cluster_topics")
-    workflow.add_edge("cluster_topics", "generate_newsletter")
+    workflow.add_edge("cluster_topics", "process_images")
+    workflow.add_edge("process_images", "generate_newsletter")
     workflow.add_edge("generate_newsletter", "publish_to_quaily")
     workflow.add_edge("publish_to_quaily", END)
     

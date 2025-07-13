@@ -1664,7 +1664,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
         
         # If text is already short enough, return as is
         if len(text) <= max_toc_length:
-        return text
+            return text
     
         # Special handling for titles with quoted content like 「Deep Research」
         # Try to include the quoted part if possible
@@ -1784,8 +1784,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
                     logger.debug(f"LLM generated base summary for title: {base_summary}")
                     # Programmatically format the headline
                     return self._format_headline_from_summary(base_summary)
-            
-        except Exception as e:
+            except Exception as e:
                 logger.warning(f"LLM title generation failed, falling back: {e}")
         
         # Fallback to using the first summary point

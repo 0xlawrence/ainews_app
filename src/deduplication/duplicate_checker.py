@@ -11,8 +11,9 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from src.models.schemas import DuplicateCheckResult, SummarizedArticle
 from src.utils.logger import setup_logging
-from src.constants.settings import SIMILARITY_THRESHOLDS, SIMILARITY_WEIGHTS, CONTENT_PROCESSING
+from src.config.settings import get_settings
 from src.constants.mappings import REPUTABLE_DOMAINS
+from src.constants.settings import CONTENT_PROCESSING, SIMILARITY_WEIGHTS
 from src.utils.text_processing import normalize_title_for_comparison
 
 logger = setup_logging()
@@ -23,8 +24,8 @@ class BasicDuplicateChecker:
     
     def __init__(
         self,
-        jaccard_threshold: float = SIMILARITY_THRESHOLDS['duplicate_jaccard'],
-        sequence_threshold: float = SIMILARITY_THRESHOLDS['duplicate_sequence'], 
+        jaccard_threshold: Optional[float] = None,
+        sequence_threshold: Optional[float] = None, 
         consolidation_mode: bool = True    # Enable intelligent consolidation
     ):
         """
@@ -35,8 +36,9 @@ class BasicDuplicateChecker:
             sequence_threshold: Minimum sequence ratio for duplicates  
             consolidation_mode: Enable intelligent consolidation instead of simple removal
         """
-        self.jaccard_threshold = jaccard_threshold
-        self.sequence_threshold = sequence_threshold
+        self.settings = get_settings()
+        self.jaccard_threshold = jaccard_threshold or self.settings.embedding.duplicate_similarity_threshold
+        self.sequence_threshold = sequence_threshold or self.settings.embedding.duplicate_similarity_threshold
         self.consolidation_mode = consolidation_mode
         
         # Cache for processed articles (in-memory for Phase 1)
@@ -44,6 +46,31 @@ class BasicDuplicateChecker:
         
         # Duplicate groups for consolidation
         self.duplicate_groups: List[List[SummarizedArticle]] = []
+        
+        # 🔥 ULTRA THINK: イベント単位重複検出の強化
+        self.event_based_keywords = {
+            # 同一イベントの多面的報道を統合
+            'xbox_emotion_ai': {
+                'core_keywords': ['xbox', 'microsoft', 'layoff', 'emotion', 'ai'],
+                'variants': ['解雇', 'laid-off', 'workers', 'staff', 'employees', 'emotion', 'management'],
+                'event_signature': 'xbox_exec_ai_emotion_recommendation'
+            },
+            'eu_ai_act_2025': {
+                'core_keywords': ['eu', 'ai', 'regulation', 'act', '2025'],
+                'variants': ['規制', 'legislation', 'openai', 'schedule', 'delay', 'extension'],
+                'event_signature': 'eu_ai_act_implementation_timeline'
+            },
+            'mcp_protocol_launch': {
+                'core_keywords': ['mcp', 'model', 'context', 'protocol'],
+                'variants': ['agent', 'エージェント', '外部連携', 'external', 'integration', 'openai'],
+                'event_signature': 'mcp_protocol_agent_integration'
+            },
+            'sakana_treequest_paper': {
+                'core_keywords': ['sakana', 'treequest', 'multi-model', 'collaboration'],
+                'variants': ['llm', '連携', '30%', 'performance', 'improvement', 'team'],
+                'event_signature': 'sakana_ai_treequest_multimodel_research'
+            },
+        }
     
     def check_duplicate(
         self,
@@ -86,6 +113,36 @@ class BasicDuplicateChecker:
         # Extract text for comparison
         current_text = self._extract_comparison_text(current_article)
         
+        # 🔥 ULTRA THINK: イベント単位重複検出（多面的報道の統合）
+        event_duplicate = self._check_event_based_duplicate(current_article, past_articles)
+        if event_duplicate:
+            logger.info(f"Event-based duplicate detected: {event_duplicate['signature']}")
+            result = DuplicateCheckResult(
+                is_duplicate=True,
+                matched_article=event_duplicate['article'],
+                similarity_score=0.85,  # Reduced score for event matches - more conservative
+                method="embedding_similarity",  # Schema-compliant method
+                processing_time_seconds=time.time() - start_time
+            )
+            return result
+        
+        # 🔥 ULTRA THINK: 関連記事 vs 重複記事の区別強化
+        for past_article in past_articles:
+            relationship = self._classify_article_relationship(current_article, past_article)
+            if relationship == "duplicate":
+                logger.info(f"True duplicate detected: different aspect of same event")
+                result = DuplicateCheckResult(
+                    is_duplicate=True,
+                    matched_article=past_article,
+                    similarity_score=0.90,
+                    method="embedding_similarity",
+                    processing_time_seconds=time.time() - start_time
+                )
+                return result
+            elif relationship == "related":
+                logger.info(f"Related article detected: keep both for richer coverage")
+                # 関連記事は重複ではないので処理を継続
+        
         best_match = None
         best_score = 0.0
         # Allowed values per DuplicateCheckResult schema
@@ -93,6 +150,17 @@ class BasicDuplicateChecker:
         
         for past_article in past_articles:
             try:
+                # Skip self-comparison (same article ID)
+                current_id = current_article.filtered_article.raw_article.id
+                past_id = past_article.filtered_article.raw_article.id
+                
+                if current_id == past_id:
+                    logger.debug(
+                        "Skipping self-comparison",
+                        article_id=current_id
+                    )
+                    continue
+                
                 # Use enhanced similarity for better accuracy
                 enhanced_score = self._calculate_enhanced_similarity(current_article, past_article)
                 
@@ -103,7 +171,7 @@ class BasicDuplicateChecker:
                 basic_max_score = max(jaccard_score, sequence_score)
                 
                 # Use enhanced score if significantly different, otherwise use basic
-                if abs(enhanced_score - basic_max_score) > SIMILARITY_THRESHOLDS['enhanced_diff_threshold']:
+                if abs(enhanced_score - basic_max_score) > self.settings.embedding.enhanced_diff_threshold:
                     # Significant difference - use enhanced score
                     max_score = enhanced_score
                     method_internal = "enhanced"
@@ -139,9 +207,20 @@ class BasicDuplicateChecker:
                 continue
         
         # Determine if duplicate
+        threshold_used = max(self.jaccard_threshold, self.sequence_threshold)
         is_duplicate = False
-        if best_score >= max(self.jaccard_threshold, self.sequence_threshold):
+        if best_score >= threshold_used:
             is_duplicate = True
+            
+        logger.debug(
+            "Duplicate check result",
+            current_id=current_article.filtered_article.raw_article.id,
+            best_score=best_score,
+            threshold_used=threshold_used,
+            is_duplicate=is_duplicate,
+            jaccard_threshold=self.jaccard_threshold,
+            sequence_threshold=self.sequence_threshold
+        )
         
         # Ensure the method conforms to the schema literal set
         result = DuplicateCheckResult(
@@ -603,6 +682,170 @@ class BasicDuplicateChecker:
             recent_articles=len(recent_articles),
             days_lookback=days_lookback
         )
+    
+    def _check_event_based_duplicate(
+        self, 
+        current_article: SummarizedArticle, 
+        past_articles: List[SummarizedArticle]
+    ) -> Optional[dict]:
+        """🔥 ULTRA THINK: イベント単位重複検出（同一イベントの多面的報道を統合）"""
+        
+        current_title = current_article.filtered_article.raw_article.title.lower()
+        current_content = getattr(current_article.filtered_article.raw_article, 'content', '').lower()
+        current_text = f"{current_title} {current_content}"
+        
+        for event_name, event_config in self.event_based_keywords.items():
+            # Phase 1: Core keywords matching (must have 2+ core keywords)
+            core_matches = sum(1 for kw in event_config['core_keywords'] if kw.lower() in current_text)
+            if core_matches < 2:
+                continue
+                
+            # Phase 2: Variant keywords matching (need 1+ for confirmation)
+            variant_matches = sum(1 for kw in event_config['variants'] if kw.lower() in current_text)
+            
+            # Event match threshold: 2+ core + 1+ variant = same event
+            if core_matches >= 2 and variant_matches >= 1:
+                # Look for past articles covering the same event
+                for past_article in past_articles:
+                    past_title = past_article.filtered_article.raw_article.title.lower()
+                    past_content = getattr(past_article.filtered_article.raw_article, 'content', '').lower()
+                    past_text = f"{past_title} {past_content}"
+                    
+                    past_core_matches = sum(1 for kw in event_config['core_keywords'] if kw.lower() in past_text)
+                    past_variant_matches = sum(1 for kw in event_config['variants'] if kw.lower() in past_text)
+                    
+                    # Same threshold for past article
+                    if past_core_matches >= 2 and past_variant_matches >= 1:
+                        logger.info(
+                            f"Event duplicate found: {event_name} "
+                            f"(current: {core_matches}+{variant_matches}, past: {past_core_matches}+{past_variant_matches})"
+                        )
+                        return {
+                            'article': past_article,
+                            'signature': event_config['event_signature'],
+                            'event_name': event_name,
+                            'confidence': (core_matches + variant_matches + past_core_matches + past_variant_matches) / 8.0
+                        }
+        
+        return None
+
+    def _check_topic_duplicate(self, current_article: SummarizedArticle, past_articles: List[SummarizedArticle]) -> Optional[SummarizedArticle]:
+        """DEPRECATED: Use _check_event_based_duplicate instead."""
+        logger.warning("Using deprecated _check_topic_duplicate. Use _check_event_based_duplicate instead.")
+        
+        current_title = current_article.filtered_article.raw_article.title.lower()
+        current_content = getattr(current_article.filtered_article.raw_article, 'content', '').lower()
+        current_text = f"{current_title} {current_content}"
+        
+        # Fallback to simple keyword matching
+        simple_keywords = {
+            'xbox_emotion': ['xbox', 'microsoft', 'emotion', 'ai'],
+            'eu_regulation': ['eu', 'ai', 'regulation'],
+            'mcp_protocol': ['mcp', 'protocol', 'agent'],
+            'sakana_research': ['sakana', 'treequest', 'multi-model'],
+        }
+        
+        for topic, keywords in simple_keywords.items():
+            keyword_matches = sum(1 for kw in keywords if kw.lower() in current_text)
+            if keyword_matches >= 3:
+                for past_article in past_articles:
+                    past_title = past_article.filtered_article.raw_article.title.lower()
+                    past_content = getattr(past_article.filtered_article.raw_article, 'content', '').lower()
+                    past_text = f"{past_title} {past_content}"
+                    
+                    past_matches = sum(1 for kw in keywords if kw.lower() in past_text)
+                    if past_matches >= 3:
+                        logger.info(f"Legacy topic duplicate found: {topic}")
+                        return past_article
+        
+        return None
+
+    def _classify_article_relationship(self, current_article: SummarizedArticle, past_article: SummarizedArticle) -> str:
+        """🔥 ULTRA THINK: 関連記事 vs 重複記事の意味的区別"""
+        
+        current_title = current_article.filtered_article.raw_article.title.lower()
+        current_content = getattr(current_article.filtered_article.raw_article, 'content', '').lower()
+        current_text = f"{current_title} {current_content}"
+        
+        past_title = past_article.filtered_article.raw_article.title.lower()
+        past_content = getattr(past_article.filtered_article.raw_article, 'content', '').lower()
+        past_text = f"{past_title} {past_content}"
+        
+        # 基本類似度計算
+        basic_similarity = self._calculate_max_similarity(current_article, past_article)
+        
+        # Phase 1: 明確な重複パターン（同一記事の転載等）- ULTRA CONSERVATIVE
+        if basic_similarity > 0.95:
+            logger.debug(f"High similarity duplicate detected: {basic_similarity:.3f}")
+            return "duplicate"
+        
+        # Phase 2: ソース URL の完全一致チェック（同一記事の確実な判定）
+        current_url = str(current_article.filtered_article.raw_article.url)
+        past_url = str(past_article.filtered_article.raw_article.url)
+        if current_url == past_url:
+            logger.debug(f"Identical URL duplicate detected: {current_url}")
+            return "duplicate"
+        
+        # Phase 3: 関連記事パターンの検出（より拡張的・具体的に）
+        if basic_similarity > 0.50:  # 閾値を下げて関連記事をより多く検出
+            # 異なる視点・側面からの同一トピック記事を関連記事として保持
+            related_patterns = [
+                # AI技術スタック
+                (['mcp', 'protocol'], ['agent', 'エージェント', 'autonomous']),
+                (['sakana', 'treequest'], ['multi', 'model', 'llm', 'collaboration']),
+                (['openai', 'altman'], ['startup', 'advice', '起業', 'entrepreneur']),
+                (['invent', 'platform'], ['ai', 'assistant', 'multiple', 'integration']),
+                # エージェント技術の進化段階
+                (['chatbot', 'evolution'], ['agent', 'architecture', 'agentic']),
+                (['react', 'autogpt'], ['autonomous', 'planning', 'execution']),
+                (['gemini', 'chatgpt'], ['comparison', '比較', 'migration', '乗り換え']),
+                # プロンプト・メタ認知技術
+                (['prompt', 'improvement'], ['reflection', '反省', 'meta-cognitive']),
+                # 技術評価・研究
+                (['apple', 'reasoning'], ['model', 'evaluation', 'performance', '性能']),
+                (['hunter', 'nen'], ['ai', 'reasoning', '推論', 'capability'])  # 追加：人工知能能力論
+            ]
+            
+            for pattern1, pattern2 in related_patterns:
+                has_pattern1_current = any(p in current_text for p in pattern1)
+                has_pattern2_past = any(p in past_text for p in pattern2)
+                has_pattern2_current = any(p in current_text for p in pattern2)
+                has_pattern1_past = any(p in past_text for p in pattern1)
+                
+                # 相互に関連パターンを持つ場合は関連記事
+                if (has_pattern1_current and has_pattern2_past) or (has_pattern2_current and has_pattern1_past):
+                    pattern_info = f"{pattern1} <-> {pattern2}"
+                    logger.debug(f"Related article pattern detected: {pattern_info}")
+                    return "related"
+            
+            # Phase 4: 同一企業・組織の異なるニュース（関連記事として保持）
+            company_entities = [
+                ['openai', 'chatgpt', 'altman'],
+                ['sakana', 'sakana ai'],
+                ['anthropic', 'claude'],
+                ['google', 'gemini', 'deepmind'],
+                ['microsoft', 'bing', 'copilot'],
+                ['apple', 'siri'],
+                ['meta', 'facebook', 'llama']
+            ]
+            
+            for entities in company_entities:
+                has_current = any(entity in current_text for entity in entities)
+                has_past = any(entity in past_text for entity in entities)
+                
+                if has_current and has_past:
+                    # 同一企業の異なる側面のニュース = 関連記事
+                    logger.debug(f"Same company related articles: {entities}")
+                    return "related"
+        
+        # Phase 5: 中程度類似度での重複判定（従来より厳格化）
+        if basic_similarity > 0.80:  # 0.75→0.80に厳格化
+            logger.debug(f"Medium-high similarity duplicate: {basic_similarity:.3f}")
+            return "duplicate"
+        
+        # Phase 6: デフォルト（無関係）
+        logger.debug(f"Unrelated articles: {basic_similarity:.3f}")
+        return "unrelated"
 
 
 def check_article_duplicates(
@@ -630,8 +873,8 @@ def check_article_duplicates(
 
 def consolidate_similar_articles(
     articles: List[SummarizedArticle],
-    jaccard_threshold: float = 0.55,  # Default fallback値
-    sequence_threshold: float = 0.60,  # Default fallback値
+    jaccard_threshold: float = 0.50,  # Lowered from 0.55 to prevent over-filtering
+    sequence_threshold: float = 0.55,  # Lowered from 0.60 to prevent over-filtering
     consolidation_mode: bool = True,
     *,
     similarity_threshold: float | None = None  # 新規オプション (both metricsに適用)
@@ -650,14 +893,36 @@ def consolidate_similar_articles(
         List of consolidated articles
     """
     
+    logger.info(
+        "Starting consolidate_similar_articles",
+        total_articles=len(articles),
+        jaccard_threshold=jaccard_threshold,
+        sequence_threshold=sequence_threshold,
+        similarity_threshold=similarity_threshold
+    )
+    
     # If a unified similarity_threshold が渡された場合は、両方のメトリクスに適用
     if similarity_threshold is not None:
         jaccard_threshold = similarity_threshold
         sequence_threshold = similarity_threshold
+        logger.info(
+            "Using unified similarity threshold",
+            unified_threshold=similarity_threshold
+        )
 
     checker = BasicDuplicateChecker(
         jaccard_threshold=jaccard_threshold,
         sequence_threshold=sequence_threshold,
         consolidation_mode=consolidation_mode,
     )
-    return checker.consolidate_duplicates(articles)
+    
+    result = checker.consolidate_duplicates(articles)
+    
+    logger.info(
+        "Consolidation completed",
+        input_articles=len(articles),
+        output_articles=len(result),
+        articles_removed=len(articles) - len(result)
+    )
+    
+    return result

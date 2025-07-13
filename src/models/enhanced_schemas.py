@@ -340,3 +340,18 @@ DEFAULT_VALIDATION_RULES = [
         message="Must have at most 4 bullet points"
     )
 ]
+
+# Add production validation support if not present
+class Severity(str, Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
+class ValidationViolation(BaseModel):
+    """Represents a single validation rule violation."""
+
+    rule_id: str
+    severity: Severity = Severity.ERROR
+    message: str
+    suggestion: str | None = None

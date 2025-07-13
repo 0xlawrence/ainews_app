@@ -63,7 +63,7 @@ SOURCE_MAPPINGS = {
     "theverge": "The Verge", 
     "the_verge": "The Verge",
     "wired": "WIRED",
-    "openai_blog": "OpenAI Official",
+    "openai_blog": "OpenAI Blog",
     "openai_news": "OpenAI Official",
     "anthropic_news": "Anthropic Official",
     "google_ai_blog": "Google AI Blog",

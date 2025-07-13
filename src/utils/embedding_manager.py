@@ -83,6 +83,7 @@ except Exception:  # pylint: disable=broad-except
 from openai import OpenAI
 
 from src.models.schemas import RawArticle, SummarizedArticle
+from src.config.settings import get_settings
 from src.utils.logger import setup_logging
 
 logger = setup_logging()
@@ -115,13 +116,19 @@ class EmbeddingManager:
         # Ensure directories exist
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Initialize OpenAI client
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            logger.warning("OpenAI API key not found")
+        # Initialize OpenAI client using settings
+        try:
+            settings = get_settings()
+            api_key = settings.llm.openai_api_key
+            if not api_key:
+                logger.warning("OpenAI API key not found in settings")
+                self.openai_client = None
+            else:
+                self.openai_client = OpenAI(api_key=api_key)
+                logger.info("OpenAI client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI client: {e}")
             self.openai_client = None
-        else:
-            self.openai_client = OpenAI(api_key=api_key)
         
         # Initialize FAISS index
         self.index = None
@@ -612,6 +619,56 @@ class EmbeddingManager:
         """
 
         return await self.generate_embedding(text)
+    
+    def cleanup_resources(self) -> None:
+        """
+        Clean up resources to prevent memory leaks.
+        
+        This method should be called at the end of newsletter generation
+        to free up memory used by FAISS index and metadata cache.
+        """
+        try:
+            # Clear metadata cache
+            if hasattr(self, 'metadata') and self.metadata:
+                original_count = len(self.metadata)
+                self.metadata.clear()
+                logger.info(f"Cleared {original_count} metadata entries from memory")
+            
+            # Reset FAISS index to free memory
+            if hasattr(self, 'index') and self.index:
+                # Create a new empty index of the same dimension
+                self._create_new_index()
+                logger.info("Reset FAISS index to free memory")
+            
+            # Clear OpenAI client if needed (optional - client is lightweight)
+            # self.openai_client = None  # Uncomment if memory is critical
+            
+            logger.info("EmbeddingManager cleanup completed successfully")
+            
+        except Exception as e:
+            logger.warning(f"Error during EmbeddingManager cleanup: {e}")
+    
+    def get_memory_usage_stats(self) -> Dict[str, int]:
+        """
+        Get current memory usage statistics.
+        
+        Returns:
+            Dictionary with memory usage statistics
+        """
+        stats = {
+            "metadata_count": len(self.metadata) if hasattr(self, 'metadata') else 0,
+            "index_total_vectors": self.index.ntotal if hasattr(self, 'index') else 0,
+            "dimension": self.dimension
+        }
+        
+        # Estimate memory usage
+        if hasattr(self, 'index') and self.index.ntotal > 0:
+            # Rough estimate: each vector is dimension * 4 bytes (float32)
+            stats["estimated_index_memory_bytes"] = self.index.ntotal * self.dimension * 4
+        else:
+            stats["estimated_index_memory_bytes"] = 0
+            
+        return stats
 
 
 # Convenience functions

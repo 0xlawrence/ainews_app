@@ -309,7 +309,8 @@ class ContentFetcher:
         if hasattr(entry, 'tags') and entry.tags:
             tags.extend([tag.term for tag in entry.tags if hasattr(tag, 'term')])
         
-        return RawArticle(
+        # Create article with priority setting
+        article = RawArticle(
             id=article_id,
             title=title,
             url=link,
@@ -320,6 +321,11 @@ class ContentFetcher:
             author=author,
             tags=tags
         )
+        
+        # Set source priority based on source_id
+        article.set_source_priority()
+        
+        return article
     
     def _parse_date(self, entry: feedparser.FeedParserDict) -> datetime:
         """Parse publication date from RSS entry."""

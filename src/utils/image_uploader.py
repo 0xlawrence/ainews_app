@@ -43,7 +43,7 @@ class ImageUploader:
             raise ImportError("supabase package is required for image upload")
         
         if not HAS_PIL:
-            raise ImportError("Pillow package is required for image processing")
+            raise ImportError("Pillow (PIL) package is required for image processing. Install with: pip install Pillow")
         
         self.settings = get_settings()
         self.client = self._initialize_client()
@@ -177,7 +177,7 @@ class ImageUploader:
             logger.error(f"Failed to optimize image {image_path}: {e}")
             raise ValueError(f"Image optimization failed: {e}")
     
-    def _compress_to_target_size(self, img: Image.Image, max_size_kb: int) -> bytes:
+    def _compress_to_target_size(self, img, max_size_kb: int) -> bytes:
         """
         Compress image to target file size by adjusting JPEG quality.
         
