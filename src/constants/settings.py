@@ -119,7 +119,7 @@ OUTPUT_SETTINGS = {
 # Weighting factors for enhanced similarity calculation
 SIMILARITY_WEIGHTS = {
     'title': 0.40,          # Title similarity weight
-    'content': 0.35,        # Content similarity weight  
+    'content': 0.35,        # Content similarity weight
     'excerpt': 0.20,        # Content excerpt weight
     'source_bonus': 0.05,   # Cross-source bonus weight
 }
@@ -151,7 +151,7 @@ EMBEDDING_SETTINGS = {
         "cost_per_1m_tokens": 0.13
     },
     "large_ultra_compressed": {
-        "model": "text-embedding-3-large", 
+        "model": "text-embedding-3-large",
         "dimension": 256,   # Ultra efficient
         "cost_per_1m_tokens": 0.13
     }

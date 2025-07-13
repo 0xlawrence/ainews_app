@@ -2,28 +2,25 @@
 LLM Router for handling multiple LLM providers with fallback support.
 """
 import asyncio
-import time
 import logging
 import re
-from typing import Optional, Dict, Any, List
-import os
+import time
 
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
-from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
-from src.models.schemas import SummaryOutput, ProcessedArticle
 from src.config.settings import get_settings
+from src.models.schemas import ProcessedArticle, SummaryOutput
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 class LLMRouter:
     """Router for managing multiple LLM providers with fallback support."""
-    
+
     def __init__(self):
         """Initialize the LLM router with client configurations."""
         self.settings = get_settings()
@@ -31,31 +28,31 @@ class LLMRouter:
         self.fallback_models = [self.settings.llm.fallback_model, self.settings.llm.final_fallback_model]
         self.retry_delay = self.settings.llm.retry_delay
         self.timeout = self.settings.llm.timeout
-        
+
         # Initialize clients lazily
-        self._clients: Dict[str, BaseChatModel] = {}
-        
-        logger.info("LLM Router initialized with primary models: %s, fallback models: %s", 
+        self._clients: dict[str, BaseChatModel] = {}
+
+        logger.info("LLM Router initialized with primary models: %s, fallback models: %s",
                    self.primary_models, self.fallback_models)
-    
+
     def _create_gemini_client(self) -> ChatGoogleGenerativeAI:
         """Create Gemini client with optimized settings."""
         api_key = self.settings.llm.gemini_api_key
-        
+
         # Debug logging for API key
         if not api_key:
             logger.error("GEMINI_API_KEY environment variable is not set")
             raise ValueError("GEMINI_API_KEY environment variable is required")
-        
+
         # Validate API key format
         if not api_key.startswith("AIzaSy") or len(api_key) < 30:
             logger.error("GEMINI_API_KEY appears to be invalid (wrong format or too short)")
-            logger.debug("API key format: starts_with_AIzaSy=%s, length=%d", 
+            logger.debug("API key format: starts_with_AIzaSy=%s, length=%d",
                         api_key.startswith("AIzaSy"), len(api_key))
             raise ValueError("GEMINI_API_KEY appears to be invalid")
-        
+
         logger.info("Creating Gemini client with API key: %s...", api_key[:12])
-        
+
         return ChatGoogleGenerativeAI(
             model=self.primary_models[0],  # コスト重視の 2.5 Flash に変更
             google_api_key=api_key,
@@ -65,24 +62,24 @@ class LLMRouter:
             max_retries=2
             # Note: removed thinking-related and response_format parameters as they're not supported by LangChain ChatGoogleGenerativeAI
         )
-    
+
     def _create_claude_client(self) -> ChatAnthropic:
         """Create Claude client."""
         api_key = self.settings.llm.claude_api_key
-        
+
         if not api_key:
             logger.error("ANTHROPIC_API_KEY environment variable is not set")
             raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-        
+
         # Validate API key format
         if not api_key.startswith("sk-ant-") or len(api_key) < 50:
             logger.error("ANTHROPIC_API_KEY appears to be invalid (wrong format or too short)")
-            logger.debug("API key format: starts_with_sk-ant=%s, length=%d", 
+            logger.debug("API key format: starts_with_sk-ant=%s, length=%d",
                         api_key.startswith("sk-ant-"), len(api_key))
             raise ValueError("ANTHROPIC_API_KEY appears to be invalid")
-        
+
         logger.info("Creating Claude client with API key: %s...", api_key[:20])
-        
+
         return ChatAnthropic(
             model="claude-3-7-sonnet-20250219",
             anthropic_api_key=api_key,
@@ -90,24 +87,24 @@ class LLMRouter:
             max_tokens=2048,
             timeout=self.timeout
         )
-    
+
     def _create_openai_client(self) -> ChatOpenAI:
         """Create OpenAI client."""
         api_key = self.settings.llm.openai_api_key
-        
+
         if not api_key:
             logger.error("OPENAI_API_KEY environment variable is not set")
             raise ValueError("OPENAI_API_KEY environment variable is required")
-        
+
         # Validate API key format (support both sk-proj- and sk- prefixes)
         if not (api_key.startswith("sk-proj-") or api_key.startswith("sk-")) or len(api_key) < 40:
             logger.error("OPENAI_API_KEY appears to be invalid (wrong format or too short)")
-            logger.debug("API key format: starts_with_sk=%s, length=%d", 
+            logger.debug("API key format: starts_with_sk=%s, length=%d",
                         api_key.startswith("sk-"), len(api_key))
             raise ValueError("OPENAI_API_KEY appears to be invalid")
-        
+
         logger.info("Creating OpenAI client with API key: %s...", api_key[:20])
-        
+
         return ChatOpenAI(
             model="gpt-4o-mini",
             openai_api_key=api_key,
@@ -115,7 +112,7 @@ class LLMRouter:
             max_tokens=2048,
             timeout=self.timeout
         )
-    
+
     def _get_client(self, model_name: str) -> BaseChatModel:
         """Get or create a client for the specified model."""
         if model_name not in self._clients:
@@ -127,91 +124,91 @@ class LLMRouter:
                 self._clients[model_name] = self._create_openai_client()
             else:
                 raise ValueError(f"Unsupported model: {model_name}")
-        
+
         return self._clients[model_name]
-    
+
     async def generate_summary(
         self,
         article_title: str,
         article_content: str,
         article_url: str,
         source_name: str,
-        max_retries: Optional[int] = None
+        max_retries: int | None = None
     ) -> SummaryOutput:
         """
         Generate summary using primary model with fallback support.
-        
+
         Args:
             article_title: Title of the article
             article_content: Content of the article
             article_url: URL of the article
             source_name: Name of the source
             max_retries: Maximum retries for primary model (default: 3)
-        
+
         Returns:
             SummaryOutput: Generated summary with metadata
         """
         if max_retries is None:
             max_retries = 3
-        
+
         # Prepare prompts
         system_prompt = self._get_summary_system_prompt()
         user_prompt = self._get_summary_user_prompt(
             article_title, article_content, article_url, source_name
         )
-        
-        last_error: Optional[Exception] = None
+
+        last_error: Exception | None = None
         primary_model = self.primary_models[0]
         fallback_models = self.fallback_models
-        
+
         logger.info(
             "Attempting summary generation with model: %s, article: %s",
             primary_model,
             article_title[:50] + "..."
         )
-        
+
         # Try primary model with retries
         for attempt in range(max_retries):
             try:
                 start_time = time.time()
-                
+
                 # Get client
                 client = self._get_client(primary_model)
-                
+
                 prompt = ChatPromptTemplate.from_messages([
                     ("system", system_prompt),
                     ("human", user_prompt),
                 ])
-                
+
                 formatted_prompt = prompt.format_messages(
                     記事タイトル=article_title,
                     記事URL=article_url,
                     内容=article_content,
                     ソース名=source_name
                 )
-                
+
                 response = await self._ainvoke_json(client, formatted_prompt, primary_model)
-                
+
                 # Log raw response for debugging
                 logger.debug("RAW_RESP (model=%s): %s", primary_model, response.content[:500] if hasattr(response, "content") else str(response)[:500])
                 logger.error("FULL RAW RESPONSE: %s", repr(response.content))
-                
+
                 # Use unified extraction method
                 summary = self._extract_summary_from_response(response.content, primary_model)
                 if summary:
                     processing_time = time.time() - start_time
                     estimated_cost = self._estimate_cost(primary_model, user_prompt, response.content)
-                    
+
                     logger.info(
                         "Primary model summary successful - model: %s, attempt: %d, time: %.2fs, cost: $%.4f",
                         primary_model, attempt + 1, processing_time, estimated_cost
                     )
                     return summary
-                
+
             except Exception as e:
                 last_error = e
                 processing_time = time.time() - start_time
-                
+
                 # Log detailed error information
                 logger.warning(
                     "Summary generation attempt failed - model: %s, attempt: %d, error: %s (%s), time: %.2fs",
@@ -222,18 +219,18 @@ class LLMRouter:
                     processing_time
                 )
                 logger.error("Full exception details:", exc_info=True)
-                
+
                 # Log response content for debugging if available
                 if 'response' in locals() and hasattr(response, 'content'):
                     logger.debug(
                         "Response content: %s",
                         response.content[:500] if response.content else "None"
                     )
-                    
+
                     # Wait before retry
                     if attempt < max_retries - 1:
                         await asyncio.sleep(self.retry_delay * (attempt + 1))
-        
+
         # Try fallback models (1 attempt each)
         for fallback_model in fallback_models:
             try:
@@ -248,88 +245,88 @@ class LLMRouter:
                     "Fallback summary generation failed - model: %s, error: %s",
                     fallback_model, str(e)
                 )
-        
+
         # All models failed, create fallback summary
         logger.error(
             "All LLM models failed, creating fallback summary - last_error: %s, article: %s",
             str(last_error),
             article_title
         )
-        
+
         return self._create_fallback_summary(
             article_title, article_content, str(last_error)
         )
-    
+
     async def _try_single_model(
-        self, 
-        model_name: str, 
-        article_title: str, 
-        article_content: str, 
-        article_url: str, 
+        self,
+        model_name: str,
+        article_title: str,
+        article_content: str,
+        article_url: str,
         source_name: str
-    ) -> Optional[SummaryOutput]:
+    ) -> SummaryOutput | None:
         """Try generating summary with a single model (helper method to reduce duplication)."""
         start_time = time.time()
-        
+
         logger.info(
             "Attempting summary generation - model: %s, article: %s",
             model_name, article_title[:50] + "..."
         )
-        
+
         # Get client
         client = self._get_client(model_name)
-        
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", self._get_summary_system_prompt()),
             ("human", self._get_summary_user_prompt(
                 article_title, article_content, article_url, source_name
             )),
         ])
-        
+
         formatted_prompt = prompt.format_messages()
         response = await self._ainvoke_json(client, formatted_prompt, model_name)
-        
+
         # Parse response using existing extraction methods
         summary = self._extract_summary_from_response(response.content, model_name)
         if not summary:
             return None
-            
+
         # Validate summary
         self._validate_summary(summary)
-        
+
         # Add metadata
         summary.model_used = model_name
         processing_time = time.time() - start_time
         estimated_cost = self._estimate_cost(
-            model_name, 
-            self._get_summary_user_prompt(article_title, article_content, article_url, source_name), 
+            model_name,
+            self._get_summary_user_prompt(article_title, article_content, article_url, source_name),
             response.content
         )
-        
+
         logger.info(
             "Summary generation successful - model: %s, time: %.2fs, cost: $%.4f, confidence: %.2f",
             model_name, processing_time, estimated_cost, summary.confidence_score
         )
-        
+
         return summary
-    
-    def _extract_summary_from_response(self, content: str, model_name: str) -> Optional[SummaryOutput]:
+
+    def _extract_summary_from_response(self, content: str, model_name: str) -> SummaryOutput | None:
         """Extract SummaryOutput from LLM response content."""
         if not content:
             return None
-            
+
         content = content.strip()
-        
+
         # Try to extract JSON from various formats
         import json
         json_content = None
-        
+
         # Method 1: Direct JSON parsing
         try:
             json_content = json.loads(content)
         except:
             pass
-        
+
         # Method 2: Extract from markdown code blocks
         if json_content is None:
             json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
@@ -338,7 +335,7 @@ class LLMRouter:
                     json_content = json.loads(json_match.group(1))
                 except:
                     pass
-        
+
         # Method 3: Find JSON object in text
         if json_content is None:
             json_match = re.search(r'\{[^{}]*"summary_points"[^{}]*\[[^\]]*\][^{}]*\}', content, re.DOTALL)
@@ -347,42 +344,42 @@ class LLMRouter:
                     json_content = json.loads(json_match.group(0))
                 except:
                     pass
-        
+
         # Method 4: Extract bullet list and convert to JSON
         if json_content is None:
             bullet_lines = re.findall(r'^[\-*•・\u2022]\s*(.+)', content, re.MULTILINE)
             if len(bullet_lines) >= 3:
                 json_content = {"summary_points": bullet_lines[:4]}
-        
+
         # Method 5: Extract meaningful sentences
         if json_content is None:
             sentences = re.split(r'[。.!?]', content)
             meaningful_sentences = []
             for sentence in sentences:
                 sentence = sentence.strip()
-                if (len(sentence) >= 30 and 
+                if (len(sentence) >= 30 and
                     not any(word in sentence.lower() for word in [
                         "申し訳", "すみません", "sorry", "i apologize", "i cannot",
                         "以下に", "要約します", "まとめると", "について説明", "json", "format"
                     ])):
                     meaningful_sentences.append(sentence)
-            
+
             if len(meaningful_sentences) >= 3:
                 json_content = {"summary_points": meaningful_sentences[:4]}
-        
+
         # Try creating SummaryOutput
         if json_content:
             try:
                 return SummaryOutput(**json_content)
             except Exception as e:
                 logger.warning(f"Pydantic validation failed: {e}, using text parsing")
-        
+
         # Fallback to text parsing
         return self._parse_text_to_summary(content, model_name)
-    
+
     def _get_summary_system_prompt(self) -> str:
         """Get system prompt for summary generation."""
-        
+
         return """あなたは、日本のテクノロジー業界に精通した、高品質なAIニュースの専門編集者です。提供された記事から、読者にとって価値のある、具体的で詳細な日本語の要約を作成してください。
 
 # 厳守すべき指示
@@ -438,7 +435,7 @@ class LLMRouter:
 
 上記指示を厳守し、記事内容に基づいたJSONを生成してください。
 """
-    
+
     def _get_summary_user_prompt(
         self,
         title: str,
@@ -448,7 +445,7 @@ class LLMRouter:
     ) -> str:
         """Generate user prompt for summary."""
         return f"""記事タイトル: {title}
-        
+
 記事内容:
 {content[:2000]}
 
@@ -499,7 +496,7 @@ URL: {url}
             confidence_score=0.0,
             source_reliability="low"
         )
-    
+
     def _validate_summary(self, summary: SummaryOutput) -> None:
         """Lightweight sanity check for SummaryOutput produced via text parsing.
 
@@ -546,21 +543,21 @@ URL: {url}
 
     def _parse_text_to_summary(self, content: str, model_name: str = "unknown") -> SummaryOutput:
         """Parse LLM text response to SummaryOutput when JSON parsing fails.
-        
+
         This method extracts summary points from free-form text responses.
         """
         if not content or not content.strip():
             raise ValueError("Empty content provided for text parsing")
-        
+
         lines = [line.strip() for line in content.split('\n') if line.strip()]
         summary_points = []
-        
+
         # Extract bullet points or numbered items
         for line in lines:
             # Skip common headers/footers
             if any(skip in line.lower() for skip in ['要約', 'summary', '以下', '上記']):
                 continue
-                
+
             # Look for bullet points or numbered items
             if re.match(r'^[-*•]\s*', line) or re.match(r'^\d+\.\s*', line):
                 # Remove bullet/number prefix
@@ -571,7 +568,7 @@ URL: {url}
             elif len(line) > 30 and '。' in line:
                 # Treat longer sentences as summary points
                 summary_points.append(line)
-        
+
         # If no structured points found, split by sentences
         if not summary_points:
             sentences = re.split(r'[。.!?]', content)
@@ -579,14 +576,14 @@ URL: {url}
                 sentence = sentence.strip()
                 if len(sentence) > 20:
                     summary_points.append(sentence + '。')
-        
+
         # Ensure we have at least some content
         if not summary_points:
             summary_points = [f"記事の要約：{content[:100]}..." if len(content) > 100 else content]
-        
+
         # Limit to reasonable number of points
         summary_points = summary_points[:5]
-        
+
         return SummaryOutput(
             summary_points=summary_points,
             confidence_score=0.3,  # Lower confidence for text parsing
@@ -599,63 +596,63 @@ URL: {url}
         prompt: str,
         max_tokens: int = 250,  # Reduced from 300 for faster processing (Lawrence's requirement)
         temperature: float = 0.2,
-        max_retries: Optional[int] = None
-    ) -> Optional[str]:
+        max_retries: int | None = None
+    ) -> str | None:
         """
         Generate simple text using the primary model with fallback support.
-        
+
         Args:
             prompt: The text prompt
             max_tokens: Maximum tokens in response
             temperature: Sampling temperature
             max_retries: Maximum retries for primary model (default: 2)
-        
+
         Returns:
             Generated text or None if all models fail
         """
         if max_retries is None:
             max_retries = 2
-        
-        last_error: Optional[Exception] = None
+
+        last_error: Exception | None = None
         primary_model = self.primary_models[0]
         fallback_models = self.fallback_models
-        
+
         logger.info(
             "Attempting simple text generation with model: %s",
             primary_model
         )
-        
+
         # Try primary model with retries
         for attempt in range(max_retries):
             try:
                 start_time = time.time()
-                
+
                 # Get client
                 client = self._get_client(primary_model)
-                
+
                 prompt_template = ChatPromptTemplate.from_messages([
                     ("human", prompt),
                 ])
-                
+
                 formatted_prompt = prompt_template.format_messages()
-                
+
                 response = await self._ainvoke_json(client, formatted_prompt, primary_model)
-                
+
                 processing_time = time.time() - start_time
-                
+
                 logger.info(
                     "Simple text generation successful - model: %s, attempt: %d, time: %.2fs",
                     primary_model,
                     attempt + 1,
                     processing_time
                 )
-                
+
                 return response.content.strip() if hasattr(response, 'content') else str(response).strip()
-                
+
             except Exception as e:
                 last_error = e
                 processing_time = time.time() - start_time
-                
+
                 logger.warning(
                     "Simple text generation attempt failed - model: %s, attempt: %d, error: %s, time: %.2fs",
                     primary_model,
@@ -663,71 +660,71 @@ URL: {url}
                     str(e),
                     processing_time
                 )
-                
+
                 if attempt < max_retries - 1:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
-        
+
         # Try fallback models (1 attempt each)
         for fallback_model in fallback_models:
             logger.info(
                 "Attempting fallback simple text generation - model: %s",
                 fallback_model
             )
-            
+
             try:
                 start_time = time.time()
-                
+
                 client = self._get_client(fallback_model)
-                
+
                 prompt_template = ChatPromptTemplate.from_messages([
                     ("human", prompt),
                 ])
-                
+
                 formatted_prompt = prompt_template.format_messages()
-                
+
                 response = await self._ainvoke_json(client, formatted_prompt, fallback_model)
-                
+
                 processing_time = time.time() - start_time
-                
+
                 logger.info(
                     "Fallback simple text generation successful - model: %s, time: %.2fs",
                     fallback_model,
                     processing_time
                 )
-                
+
                 return response.content.strip() if hasattr(response, 'content') else str(response).strip()
-                
+
             except Exception as e:
                 last_error = e
                 processing_time = time.time() - start_time
-                
+
                 logger.warning(
                     "Fallback simple text generation failed - model: %s, error: %s, time: %.2fs",
                     fallback_model,
                     str(e),
                     processing_time
                 )
-        
+
         # All models failed
         logger.error(
             "All LLM models failed for simple text generation - last_error: %s",
             str(last_error)
         )
-        
+
         return None
-    
+
     async def generate_citation_based_summary(
         self,
         article_title: str,
         article_content: str,
         article_url: str,
         source_name: str,
-        citations: List[Dict[str, str]] = None,
-        max_retries: Optional[int] = None
+        citations: list[dict[str, str]] = None,
+        max_retries: int | None = None
     ) -> SummaryOutput:
         """
         Generate summary using citation information (PRD F-15 compliance).
-        
+
         Args:
             article_title: Title of the main article
             article_content: Content of the main article
@@ -735,68 +732,68 @@ URL: {url}
             source_name: Name of the main source
             citations: List of citation dicts with 'title', 'url', 'summary' keys
             max_retries: Maximum retries for primary model (default: 3)
-        
+
         Returns:
             SummaryOutput: Generated summary incorporating citation information
         """
         if max_retries is None:
             max_retries = 3
-        
+
         # Prepare prompts with citation context
         system_prompt = self._get_citation_based_system_prompt()
         user_prompt = self._get_citation_based_user_prompt(
             article_title, article_content, article_url, source_name, citations or []
         )
-        
-        last_error: Optional[Exception] = None
+
+        last_error: Exception | None = None
         primary_model = self.primary_models[0]
         fallback_models = self.fallback_models
-        
+
         logger.info(
             "Attempting citation-based summary generation with model: %s, article: %s, citations: %d",
             primary_model,
             article_title[:50] + "...",
             len(citations) if citations else 0
         )
-        
+
         # Try primary model with retries
         for attempt in range(max_retries):
             try:
                 start_time = time.time()
-                
+
                 # Get client
                 client = self._get_client(primary_model)
-                
+
                 prompt = ChatPromptTemplate.from_messages([
                     ("system", system_prompt),
                     ("human", user_prompt),
                 ])
-                
+
                 formatted_prompt = prompt.format_messages(
                     記事タイトル=article_title,
                     記事URL=article_url,
                     内容=article_content,
                     ソース名=source_name
                 )
-                
+
                 response = await self._ainvoke_json(client, formatted_prompt, primary_model)
-                
+
                 # Log raw response for debugging
                 logger.debug("CITATION_BASED_RAW_RESP (model=%s): %s", primary_model, response.content[:500] if hasattr(response, "content") else str(response)[:500])
-                
+
                 # Parse structured output with robust JSON extraction
                 content = response.content.strip()
-                
+
                 # Try to extract JSON from various formats (same as original method)
                 import json
                 json_content = None
-                
+
                 # Method 1: Direct JSON parsing
                 try:
                     json_content = json.loads(content)
                 except:
                     pass
-                
+
                 # Method 2: Extract from markdown code blocks
                 if json_content is None:
                     json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
@@ -805,7 +802,7 @@ URL: {url}
                             json_content = json.loads(json_match.group(1))
                         except:
                             pass
-                
+
                 # Method 3: Find JSON object in text
                 if json_content is None:
                     json_match = re.search(r'\{[^{}]*"summary_points"[^{}]*\[[^\]]*\][^{}]*\}', content, re.DOTALL)
@@ -814,7 +811,7 @@ URL: {url}
                             json_content = json.loads(json_match.group(0))
                         except:
                             pass
-                
+
                 # Method 4: Clean and try again
                 if json_content is None:
                     cleaned_content = content
@@ -829,7 +826,7 @@ URL: {url}
                         json_content = json.loads(cleaned_content)
                     except:
                         pass
-                
+
                 # Method 5: Extract bullet list and convert to JSON
                 if json_content is None:
                     bullet_lines = re.findall(r'^[\-*•・\u2022]\s*(.+)', content, re.MULTILINE)
@@ -837,7 +834,7 @@ URL: {url}
                         json_content = {
                             "summary_points": bullet_lines[:4]
                         }
-                
+
                 # Method 6: Extract from pure text and convert to bullet points
                 if json_content is None:
                     logger.debug("Citation-based Method 6: Pure text to bullet conversion")
@@ -845,20 +842,20 @@ URL: {url}
                     meaningful_sentences = []
                     for sentence in sentences:
                         sentence = sentence.strip()
-                        if (len(sentence) >= 30 and 
+                        if (len(sentence) >= 30 and
                             not any(word in sentence.lower() for word in [
                                 "申し訳", "すみません", "sorry", "i apologize", "i cannot",
                                 "以下に", "要約します", "まとめると", "について説明", "json", "format"
                             ])):
                             meaningful_sentences.append(sentence)
-                    
+
                     if len(meaningful_sentences) >= 3:
                         json_content = {
                             "summary_points": meaningful_sentences[:4]
                         }
-                        logger.debug("Citation-based Method 6 successful: Created %d bullet points from text", 
+                        logger.debug("Citation-based Method 6 successful: Created %d bullet points from text",
                                    len(json_content["summary_points"]))
-                
+
                 # If we have JSON content, validate it with Pydantic
                 if json_content:
                     try:
@@ -866,34 +863,34 @@ URL: {url}
                         summary.model_used = primary_model
                         processing_time = time.time() - start_time
                         estimated_cost = self._estimate_cost(primary_model, user_prompt, response.content)
-                        
+
                         logger.info(
                             "Citation-based summary generation successful - model: %s, attempt: %d, time: %.2fs, cost: $%.4f",
                             primary_model, attempt + 1, processing_time, estimated_cost
                         )
                         return summary
-                        
+
                     except Exception as e:
                         logger.warning(f"Citation-based Pydantic validation failed: {e}, using direct text parsing")
                         summary = self._parse_text_to_summary(content, model_name=primary_model)
                 else:
                     logger.debug("Citation-based: No JSON found, parsing as text directly")
                     summary = self._parse_text_to_summary(content, model_name=primary_model)
-                    
+
                 # Validate summary
                 self._validate_summary(summary)
-                
+
                 # Add metadata
                 summary.model_used = primary_model
-                
+
                 # Calculate processing time
                 processing_time = time.time() - start_time
-                
+
                 # Estimate cost
                 estimated_cost = self._estimate_cost(
                 primary_model, user_prompt, response.content
                 )
-                
+
                 logger.info(
                 "Citation-based summary generation successful - model: %s, attempt: %d, time: %.2fs, cost: $%.4f, confidence: %.2f",
                 primary_model,
@@ -902,13 +899,13 @@ URL: {url}
                 estimated_cost,
                 summary.confidence_score
                 )
-                
+
                 return summary
-                
+
             except Exception as e:
                 last_error = e
                 processing_time = time.time() - start_time
-                
+
                 logger.warning(
                     "Citation-based summary generation attempt failed - model: %s, attempt: %d, error: %s, time: %.2fs",
                     primary_model,
@@ -916,45 +913,45 @@ URL: {url}
                     str(e),
                     processing_time
                 )
-                
+
                 if attempt < max_retries - 1:
                     await asyncio.sleep(self.retry_delay * (attempt + 1))
-        
+
         # Primary model failed, try fallback models (1 attempt each)
         for fallback_model in fallback_models:
             logger.info(
                 "Attempting fallback citation-based summary generation - model: %s",
                 fallback_model
             )
-            
+
             try:
                 start_time = time.time()
-                
+
                 client = self._get_client(fallback_model)
-                
+
                 prompt = ChatPromptTemplate.from_messages([
                     ("system", self._get_citation_based_system_prompt()),
                     ("human", self._get_citation_based_user_prompt(
                         article_title, article_content, article_url, source_name, citations or []
                     )),
                 ])
-                
+
                 formatted_prompt = prompt.format_messages()
-                
+
                 response = await self._ainvoke_json(client, formatted_prompt, fallback_model)
-                
+
                 # Parse structured output (same as primary model)
                 content = response.content.strip()
-                
+
                 # Try to extract JSON (same methods as primary)
                 import json
                 json_content = None
-                
+
                 try:
                     json_content = json.loads(content)
                 except:
                     pass
-                
+
                 if json_content is None:
                     json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
                     if json_match:
@@ -962,59 +959,59 @@ URL: {url}
                             json_content = json.loads(json_match.group(1))
                         except:
                             pass
-                
+
                 if json_content:
                     try:
                         summary = SummaryOutput(**json_content)
-                    except Exception as e:
+                    except Exception:
                         summary = self._parse_text_to_summary(content)
                 else:
                     summary = self._parse_text_to_summary(content)
-                
+
                 # Validate summary
                 self._validate_summary(summary)
-                
+
                 # Add metadata
                 summary.model_used = fallback_model
-                
+
                 processing_time = time.time() - start_time
                 estimated_cost = self._estimate_cost(
                     fallback_model, self._get_citation_based_user_prompt(
                         article_title, article_content, article_url, source_name, citations or []
                     ), response.content
                 )
-                
+
                 logger.info(
                     "Fallback citation-based summary generation successful - model: %s, time: %.2fs, cost: $%.4f",
                     fallback_model,
                     processing_time,
                     estimated_cost
                 )
-                
+
                 return summary
-                
+
             except Exception as e:
                 last_error = e
                 processing_time = time.time() - start_time
-                
+
                 logger.warning(
                     "Fallback citation-based summary generation failed - model: %s, error: %s, time: %.2fs",
                     fallback_model,
                     str(e),
                     processing_time
                 )
-        
+
         # All models failed, create fallback summary
         logger.error(
             "All LLM models failed for citation-based summary, creating fallback summary - last_error: %s, article: %s",
             str(last_error),
             article_title
         )
-        
+
         return self._create_fallback_summary(
             article_title, article_content, str(last_error)
         )
-    
+
     def _get_citation_based_system_prompt(self) -> str:
         """
         Get system prompt for citation-based summary generation (PRD F-15 compliance).
@@ -1061,19 +1058,19 @@ URL: {url}
 }}
 
 上記指示を厳守し、メイン記事と引用情報を統合したJSONを生成してください。"""
-    
+
     def _get_citation_based_user_prompt(
         self,
         title: str,
         content: str,
         url: str,
         source: str,
-        citations: List[Dict[str, str]]
+        citations: list[dict[str, str]]
     ) -> str:
         """
         Generate user prompt for citation-based summary (PRD F-15 compliance).
         """
-        
+
         # Format citations for prompt
         citations_text = ""
         if citations:
@@ -1086,10 +1083,10 @@ URL: {url}
 - 要約: {citation.get('japanese_summary', citation.get('summary', '要約なし'))}
 - URL: {citation.get('url', '')}
 """
-        
+
         return f"""# メイン記事
 記事タイトル: {title}
-        
+
 記事内容:
 {content[:2000]}
 
@@ -1098,34 +1095,34 @@ URL: {url}{citations_text}
 
 上記のメイン記事と関連記事の引用情報を統合して、包括的な要約を生成してください。
 引用情報を活用し、より深い洞察と価値を提供する要約にしてください。"""
-    
+
     async def generate_japanese_title(
         self,
         article: ProcessedArticle,
         max_tokens: int = 100,
         temperature: float = 0.3
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Generate a Japanese title for an article using LLM.
-    
+
     Args:
             article: ProcessedArticle object
             max_tokens: Maximum tokens for response
             temperature: Temperature for generation
-    
+
     Returns:
             Japanese title string or None if generation fails
         """
         try:
             # Extract content from article
             summary_points = []
-            if (hasattr(article, 'summarized_article') and 
+            if (hasattr(article, 'summarized_article') and
                 article.summarized_article and
-                hasattr(article.summarized_article, 'summary') and 
+                hasattr(article.summarized_article, 'summary') and
                 article.summarized_article.summary and
                 hasattr(article.summarized_article.summary, 'summary_points')):
                 summary_points = article.summarized_article.summary.summary_points
-            
+
             original_title = ""
             if (hasattr(article, 'summarized_article') and
                 article.summarized_article and
@@ -1134,21 +1131,21 @@ URL: {url}{citations_text}
                 hasattr(article.summarized_article.filtered_article, 'raw_article') and
                 article.summarized_article.filtered_article.raw_article):
                 original_title = article.summarized_article.filtered_article.raw_article.title
-            
+
             if not summary_points:
                 return None
-            
+
             # Check if this is an UPDATE article
             is_update = getattr(article, 'is_update', False)
             update_context = ""
             if is_update:
-                update_context = f"""
+                update_context = """
 
 # 重要：この記事は続報/更新記事です
 - 過去の関連記事に対する新しい展開・続報を示す内容です
 - 見出しには「新展開」「続報」「更新」といった継続性を示す要素を含めてください
 - 具体的な進展や変化を強調してください"""
-            
+
             # Create a new, simpler prompt focused on summarizing the summary.
             prompt = f"""あなたはプロのニュース見出し編集者です。以下の記事要約から、読者の関心を引く魅力的で具体的な日本語見出しを生成してください。
 
@@ -1200,7 +1197,7 @@ URL: {url}{citations_text}
 
 # 生成する見出し（1つのみ）:
 """
-            
+
             # Generate using simple text generation
             result = await self.generate_simple_text(
                 prompt=prompt,
@@ -1208,7 +1205,7 @@ URL: {url}{citations_text}
                 temperature=temperature,
                 max_retries=2
             )
-            
+
             if result:
                 # Clean up the result with improved multi-line handling (Lawrence's requirement)
                 lines = [line.strip() for line in result.splitlines() if line.strip()]
@@ -1217,45 +1214,45 @@ URL: {url}{citations_text}
                     title = lines[-1]
                 else:
                     title = result.strip()
-                
+
                 # Remove quotes and hash marks if present (fixes double hash mark issue)
                 title = re.sub(r'^[#\s]*["\'「]|["\'」]+$', '', title).strip()
                 title = re.sub(r'^#+\s*', '', title)  # Remove any remaining leading hash marks
                 # Remove any remaining newlines
                 title = title.replace('\n', ' ').strip()
-                
+
                 # Enhanced validation with quality scoring
                 if 10 <= len(title) <= 60:
                     # Quality scoring system
                     quality_score = 0
                     rejection_reasons = []
-                    
+
                     # 1. Check for specific content (企業名・製品名) - 拡張版
-                    companies = ['OpenAI', 'Google', 'Meta', 'Microsoft', 'Anthropic', 'Apple', 'Amazon', 'Tesla', 'NVIDIA', 
+                    companies = ['OpenAI', 'Google', 'Meta', 'Microsoft', 'Anthropic', 'Apple', 'Amazon', 'Tesla', 'NVIDIA',
                                 'Agentica', 'Together AI', 'DeepMind', 'Hugging Face', 'TechCrunch', 'VentureBeat', 'WIRED',
                                 'IEEE', 'NextWord', 'SemiAnalysis', 'Bay Area Times']
-                    products = ['ChatGPT', 'GPT-4', 'Gemini', 'Claude', 'Llama', 'Copilot', 'Bard', 'DeepSWE', 'rLLM', 
+                    products = ['ChatGPT', 'GPT-4', 'Gemini', 'Claude', 'Llama', 'Copilot', 'Bard', 'DeepSWE', 'rLLM',
                               'GRPO++', 'SWE-Bench', 'Qwen3', 'Cursor', 'RAG', 'LLM', 'SDK', 'API']
-                    
+
                     has_company = any(company in title for company in companies)
                     has_product = any(product in title for product in products)
-                    
+
                     if has_company or has_product:
                         quality_score += 3
                     else:
                         rejection_reasons.append("企業名・製品名なし")
-                    
+
                     # 2. Check for numbers/metrics
                     has_numbers = bool(re.search(r'\d+[%倍件万円ドル]|[1-9]\d*[年月日]', title))
                     if has_numbers:
                         quality_score += 2
-                    
+
                     # 3. Check for action verbs (not just passive reporting)
                     action_verbs = ['発表', '開始', '実装', '展開', '公開', '導入', '拡大', '改善', '向上', '開発']
                     has_action = any(verb in title for verb in action_verbs)
                     if has_action:
                         quality_score += 1
-                    
+
                     # 4. Problematic patterns (immediate rejection) - 修正版
                     problematic_patterns = [
                         r'発表を発表',                  # Duplicate "発表を発表"
@@ -1271,42 +1268,42 @@ URL: {url}{citations_text}
                         r'^.{1,}の発展$',             # Generic "〜の発展"
                         r'^AI分野.*$',                # Generic "AI分野"
                     ]
-                    
+
                     # Check for problematic patterns
                     is_problematic = any(re.search(pattern, title) for pattern in problematic_patterns)
                     if is_problematic:
                         rejection_reasons.append("問題のある表現パターン")
-                    
+
                     # Check for incomplete sentences ending with particles
                     particle_endings = ('は', 'が', 'を', 'に', 'で', 'と', 'から', 'まで', 'より', 'への')
                     ends_with_particle = title.endswith(particle_endings)
                     if ends_with_particle:
                         rejection_reasons.append("助詞での終了")
-                    
-                    # Check for verb endings that indicate incomplete reporting 
+
+                    # Check for verb endings that indicate incomplete reporting
                     incomplete_verbs = ('と発表しました', 'と報告しました', 'と述べました', 'と語りました')
                     ends_with_incomplete_verb = title.endswith(incomplete_verbs)
                     if ends_with_incomplete_verb:
                         rejection_reasons.append("不完全な報告表現")
-                    
+
                     # Final quality decision - 緩和版
                     min_quality_score = 2  # 緩和: 企業名/製品名があれば基本的にOK
-                    
+
                     if quality_score >= min_quality_score and not rejection_reasons:
                         logger.info(f"High-quality title accepted (score: {quality_score}): {title}")
                         return title
                     else:
                         reasons_str = ", ".join(rejection_reasons) if rejection_reasons else "品質スコア不足"
                         logger.warning(f"Title rejected (score: {quality_score}, reasons: {reasons_str}): {title}")
-                        
+
                     # Try to clean incomplete patterns
                     cleaned_title = title
-                    
+
                     # Remove incomplete verb endings
                     for ending in incomplete_verbs:
                         if cleaned_title.endswith(ending):
                             cleaned_title = cleaned_title[:-len(ending)]
-                    
+
                     # Remove particle endings and create complete phrase
                     for particle in particle_endings:
                         if cleaned_title.endswith(particle):
@@ -1319,7 +1316,7 @@ URL: {url}{citations_text}
                             else:
                                 cleaned_title += 'の動向'
                             break
-                    
+
                     if 10 <= len(cleaned_title) <= 60 and not any(re.search(pattern, cleaned_title) for pattern in problematic_patterns):
                         logger.info(f"Cleaned and accepted title: {cleaned_title}")
                         return cleaned_title
@@ -1330,17 +1327,17 @@ URL: {url}{citations_text}
                     last_space = truncated.rfind(' ')
                     last_comma = truncated.rfind('、')
                     last_period = truncated.rfind('。')
-                    
+
                     best_cut = max(last_space, last_comma, last_period)
                     if best_cut > 40:  # Only if we don't cut too much
                         return truncated[:best_cut]
                     else:
                         return truncated[:57] + "..."
-                
+
                 return None
-            
+
             return None
-            
+
         except Exception as e:
             logger.warning(f"Failed to generate Japanese title: {e}")
             return None

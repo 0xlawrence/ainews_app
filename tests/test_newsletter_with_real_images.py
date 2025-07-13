@@ -5,12 +5,11 @@ Generate a test newsletter with real image processing to demonstrate functionali
 This creates a working newsletter with real YouTube thumbnails saved locally.
 """
 
-import sys
-import os
 import asyncio
-import tempfile
-from pathlib import Path
+import os
+import sys
 from datetime import datetime
+from pathlib import Path
 
 # Add the src directory to Python path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -18,15 +17,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 async def create_test_newsletter_with_real_images():
     """Create a test newsletter with real images."""
     try:
-        from src.utils.image_fetcher import ImageFetcher
         from jinja2 import Environment, FileSystemLoader
-        
+
+        from src.utils.image_fetcher import ImageFetcher
+
         print("🚀 Creating Test Newsletter with Real Images")
         print("=" * 55)
-        
+
         # Initialize image fetcher
         fetcher = ImageFetcher()
-        
+
         # Test articles with real URLs
         test_articles = [
             {
@@ -63,31 +63,31 @@ async def create_test_newsletter_with_real_images():
                 "source": "AI Newsletter Saravia"
             }
         ]
-        
+
         # Process images for articles
         processed_articles = []
         temp_images = []  # Keep track of temp files
-        
+
         print("\n📷 Processing images for articles...")
-        
+
         for i, article in enumerate(test_articles):
             print(f"\n🧪 Processing article {i+1}: {article['title'][:50]}...")
-            
+
             try:
                 # Fetch image
                 image_path = fetcher.get_image_from_url(
-                    article['url'], 
+                    article['url'],
                     article_id=f"test-article-{i+1}"
                 )
-                
+
                 if image_path and image_path.exists():
                     file_size = image_path.stat().st_size
                     print(f"   ✅ Image fetched: {file_size:,} bytes")
-                    
+
                     # Create a local URL for demonstration
                     local_image_url = f"./temp_images/article_{i+1}_{image_path.name}"
                     temp_images.append((image_path, local_image_url))
-                    
+
                     # Add image metadata
                     article['image_url'] = local_image_url
                     article['image_metadata'] = {
@@ -96,40 +96,40 @@ async def create_test_newsletter_with_real_images():
                         "file_size": file_size,
                         "local_path": str(image_path)
                     }
-                    
+
                 else:
-                    print(f"   ❌ No image found")
+                    print("   ❌ No image found")
                     article['image_url'] = None
                     article['image_metadata'] = None
-                    
+
             except Exception as e:
                 print(f"   ❌ Error processing image: {e}")
                 article['image_url'] = None
                 article['image_metadata'] = None
-            
+
             processed_articles.append(article)
-        
+
         # Create newsletter with Jinja2 template
-        print(f"\n📝 Generating newsletter...")
-        
+        print("\n📝 Generating newsletter...")
+
         # Load template
         template_path = Path("src/templates/daily_newsletter.jinja2")
         if not template_path.exists():
             print(f"❌ Template not found: {template_path}")
             return False
-        
+
         # Setup Jinja2 environment
         env = Environment(loader=FileSystemLoader('src/templates'))
-        
+
         # Define custom filter
         def toc_format(value):
             if len(value) > 80:
                 return value[:77] + "..."
             return value
-        
+
         env.filters['toc_format'] = toc_format
         template = env.get_template('daily_newsletter.jinja2')
-        
+
         # Transform articles to match template structure
         template_articles = []
         for article in processed_articles:
@@ -155,7 +155,7 @@ async def create_test_newsletter_with_real_images():
                 }]
             }
             template_articles.append(template_article)
-        
+
         # Prepare template data
         template_data = {
             "date": datetime.now(),
@@ -168,38 +168,38 @@ async def create_test_newsletter_with_real_images():
             },
             "articles": template_articles
         }
-        
+
         # Render newsletter
         newsletter_content = template.render(**template_data)
-        
+
         # Save newsletter
         output_path = Path("drafts/test/2025-07-06_real_images_newsletter.md")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(newsletter_content)
-        
+
         print(f"✅ Newsletter created: {output_path}")
-        
+
         # Create info about images
-        print(f"\n📷 Image Information:")
-        for i, (temp_path, local_url) in enumerate(temp_images):
+        print("\n📷 Image Information:")
+        for i, (temp_path, _local_url) in enumerate(temp_images):
             if temp_path.exists():
                 file_size = temp_path.stat().st_size
                 print(f"   Article {i+1}: {file_size:,} bytes at {temp_path}")
-        
-        print(f"\n🎉 Test newsletter with real images created successfully!")
+
+        print("\n🎉 Test newsletter with real images created successfully!")
         print(f"📄 Check the file: {output_path}")
-        print(f"📷 Image files are temporarily stored and will be cleaned up")
-        
+        print("📷 Image files are temporarily stored and will be cleaned up")
+
         # Clean up temp files after a moment
         await asyncio.sleep(1)
         for temp_path, _ in temp_images:
             if temp_path.exists():
                 temp_path.unlink()
-        
+
         return True
-        
+
     except Exception as e:
         print(f"❌ Failed to create test newsletter: {e}")
         import traceback

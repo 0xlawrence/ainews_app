@@ -7,16 +7,15 @@ processing logs, and article relationships.
 
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
 
 try:
-    from supabase import create_client, Client
+    from supabase import Client, create_client
     SUPABASE_AVAILABLE = True
 except ImportError:
     SUPABASE_AVAILABLE = False
     Client = None
 
-from src.models.schemas import ProcessedArticle, ProcessingLog, SummarizedArticle
+from src.models.schemas import ProcessedArticle, ProcessingLog
 from src.utils.logger import setup_logging
 
 logger = setup_logging()
@@ -24,19 +23,19 @@ logger = setup_logging()
 
 class SupabaseClient:
     """Client for Supabase database operations."""
-    
+
     def __init__(self):
         """Initialize Supabase client."""
-        
+
         if not SUPABASE_AVAILABLE:
             logger.warning("Supabase not available - install with: pip install supabase")
             self.client = None
             return
-        
+
         url = os.getenv("SUPABASE_URL")
         # Try service role key first (bypasses RLS), fallback to regular key
         key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
-        
+
         if not url or not key:
             logger.warning(
                 "Supabase credentials not found",
@@ -46,7 +45,7 @@ class SupabaseClient:
             )
             self.client = None
             return
-        
+
         try:
             self.client: Client = create_client(url, key)
             using_service_key = bool(os.getenv("SUPABASE_SERVICE_KEY"))
@@ -58,25 +57,25 @@ class SupabaseClient:
         except Exception as e:
             logger.error("Failed to initialize Supabase client", error=str(e))
             self.client = None
-    
+
     def is_available(self) -> bool:
         """Check if Supabase client is available."""
         return self.client is not None
-    
+
     async def save_processed_content(
         self,
         processing_id: str,
-        articles: List[ProcessedArticle],
+        articles: list[ProcessedArticle],
         newsletter_content: str,
-        metadata: Dict,
+        metadata: dict,
         edition: str = "daily"
     ) -> bool:
         """Save processed newsletter content to database."""
-        
+
         if not self.is_available():
             logger.debug("Supabase not available, skipping content save")
             return False
-        
+
         try:
             # Extract processing date from processing_id or use current date
             processing_date = datetime.now().date()
@@ -88,7 +87,7 @@ class SupabaseClient:
                         processing_date = datetime.strptime(date_part, "%Y-%m-%d").date()
                 except (ValueError, IndexError):
                     pass  # Use current date as fallback
-            
+
             # Prepare data for processed_content table (matching phase2_tables.sql schema)
             content_data = {
                 "processing_date": processing_date.isoformat(),
@@ -105,7 +104,7 @@ class SupabaseClient:
                     "generated_at": datetime.now().isoformat()
                 }
             }
-            
+
             # Use upsert to handle potential duplicates based on unique constraint
             try:
                 result = self.client.table("processed_content").upsert(
@@ -119,7 +118,7 @@ class SupabaseClient:
                 )
                 # Fallback to regular insert
                 result = self.client.table("processed_content").insert(content_data).execute()
-            
+
             if result.data:
                 logger.info(
                     "Saved processed content to Supabase",
@@ -131,12 +130,12 @@ class SupabaseClient:
                 return True
             else:
                 logger.error(
-                    "Failed to save processed content", 
+                    "Failed to save processed content",
                     result=getattr(result, 'error', 'Unknown error'),
                     processing_id=processing_id
                 )
                 return False
-                
+
         except Exception as e:
             logger.error(
                 "Error saving processed content",
@@ -145,29 +144,29 @@ class SupabaseClient:
                 error_type=type(e).__name__
             )
             return False
-    
+
     async def save_processing_logs(
         self,
-        logs: List[ProcessingLog],
+        logs: list[ProcessingLog],
         edition: str = "daily"
     ) -> bool:
         """Save processing logs to database."""
-        
+
         if not self.is_available():
             logger.debug("Supabase not available, skipping logs save")
             return False
-        
+
         try:
             if not logs:
                 return True
-            
+
             # Aggregate logs into a single processing_logs entry (matching phase2_tables.sql schema)
             processing_date = datetime.now().date()
-            
+
             # Extract processing_id and date from first log
             first_log = logs[0]
             processing_id = getattr(first_log, 'processing_id', None)
-            
+
             if processing_id and len(processing_id) >= 10:
                 try:
                     date_part = processing_id.split('_')[0]
@@ -175,30 +174,30 @@ class SupabaseClient:
                         processing_date = datetime.strptime(date_part, "%Y-%m-%d").date()
                 except (ValueError, IndexError):
                     pass
-            
+
             # Calculate aggregated metrics
             total_processing_time = sum(
                 getattr(log, 'duration_seconds', 0) or 0 for log in logs
             )
-            
+
             # Count articles processed and failed based on log messages
             articles_processed = 0
             articles_failed = 0
             llm_calls = 0
-            
+
             for log in logs:
                 if hasattr(log, 'data') and log.data:
                     articles_processed += log.data.get('output_articles', 0)
                     articles_failed += log.data.get('articles_failed', 0)
                     llm_calls += log.data.get('llm_calls', 0)
-            
+
             # Determine overall status
             error_logs = [log for log in logs if getattr(log, 'event_type', '') == 'error']
             if error_logs:
                 status = "failed" if len(error_logs) > len(logs) / 2 else "partial"
             else:
                 status = "success"
-            
+
             # Prepare aggregated log data
             log_data = {
                 "processing_date": processing_date.isoformat(),
@@ -227,7 +226,7 @@ class SupabaseClient:
                     getattr(log, 'message', '') for log in error_logs
                 ]) if error_logs else None
             }
-            
+
             # Use upsert to handle potential duplicates
             try:
                 result = self.client.table("processing_logs").upsert(
@@ -240,7 +239,7 @@ class SupabaseClient:
                     error=str(upsert_error)
                 )
                 result = self.client.table("processing_logs").insert(log_data).execute()
-            
+
             if result.data:
                 logger.info(
                     "Saved aggregated processing logs to Supabase",
@@ -257,7 +256,7 @@ class SupabaseClient:
                     processing_date=processing_date
                 )
                 return False
-                
+
         except Exception as e:
             logger.error(
                 "Error saving processing logs",
@@ -266,25 +265,25 @@ class SupabaseClient:
                 error_type=type(e).__name__
             )
             return False
-    
+
     async def get_recent_articles(
         self,
         days_back: int = 7,
         limit: int = 100
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Get recent articles for duplicate checking."""
-        
+
         if not self.is_available():
             logger.debug("Supabase not available, returning empty recent articles")
             return []
-        
+
         try:
             # Calculate cutoff date
             cutoff_date = datetime.now().replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
             cutoff_date = cutoff_date.replace(day=cutoff_date.day - days_back)
-            
+
             # Query recent articles
             result = self.client.table("processed_content").select(
                 "processing_id, created_at, metadata"
@@ -293,7 +292,7 @@ class SupabaseClient:
             ).order(
                 "created_at", desc=True
             ).limit(limit).execute()
-            
+
             if result.data:
                 logger.info(
                     "Retrieved recent articles from Supabase",
@@ -304,7 +303,7 @@ class SupabaseClient:
             else:
                 logger.info("No recent articles found in Supabase")
                 return []
-                
+
         except Exception as e:
             logger.error(
                 "Error getting recent articles",
@@ -312,10 +311,10 @@ class SupabaseClient:
                 error=str(e)
             )
             return []
-    
-    async def check_health(self) -> Dict[str, bool]:
+
+    async def check_health(self) -> dict[str, bool]:
         """Check Supabase connection health."""
-        
+
         if not self.is_available():
             return {
                 "available": False,
@@ -323,25 +322,25 @@ class SupabaseClient:
                 "tables_accessible": False,
                 "schema_compatible": False
             }
-        
+
         try:
             # Test connection with multiple table queries to verify schema compatibility
             tables_to_check = [
                 "processed_content",
-                "processing_logs", 
+                "processing_logs",
                 "contextual_articles",
                 "article_relationships"
             ]
-            
+
             tables_accessible = {}
             schema_compatible = True
-            
+
             for table in tables_to_check:
                 try:
                     # Test basic connectivity
                     result = self.client.table(table).select("*").limit(1).execute()
                     tables_accessible[table] = result.data is not None
-                    
+
                     # Test specific columns for schema compatibility
                     if table == "processed_content":
                         # Test for required columns in the actual schema
@@ -354,7 +353,7 @@ class SupabaseClient:
                                 f"Schema compatibility issue with {table}",
                                 error=getattr(test_result, 'error', 'Unknown')
                             )
-                    
+
                     elif table == "processing_logs":
                         # Test for required columns
                         test_result = self.client.table(table).select(
@@ -366,7 +365,7 @@ class SupabaseClient:
                                 f"Schema compatibility issue with {table}",
                                 error=getattr(test_result, 'error', 'Unknown')
                             )
-                            
+
                 except Exception as table_error:
                     logger.warning(
                         f"Table {table} not accessible",
@@ -374,9 +373,9 @@ class SupabaseClient:
                     )
                     tables_accessible[table] = False
                     schema_compatible = False
-            
+
             overall_accessible = any(tables_accessible.values())
-            
+
             health_status = {
                 "available": True,
                 "connected": True,
@@ -384,15 +383,15 @@ class SupabaseClient:
                 "schema_compatible": schema_compatible,
                 "table_details": tables_accessible
             }
-            
+
             if not schema_compatible:
                 logger.warning(
                     "Supabase schema compatibility issues detected",
                     health_status=health_status
                 )
-            
+
             return health_status
-            
+
         except Exception as e:
             logger.error(
                 "Supabase health check failed",
@@ -449,15 +448,15 @@ async def get_supabase_client() -> SupabaseClient:
 
 async def save_newsletter_to_supabase(
     processing_id: str,
-    articles: List[ProcessedArticle],
+    articles: list[ProcessedArticle],
     newsletter_content: str,
-    processing_logs: List[ProcessingLog],
-    metadata: Dict,
+    processing_logs: list[ProcessingLog],
+    metadata: dict,
     edition: str = "daily"
 ) -> bool:
     """
     Convenience function to save newsletter data to Supabase.
-    
+
     Args:
         processing_id: Unique processing identifier
         articles: Processed articles
@@ -465,21 +464,21 @@ async def save_newsletter_to_supabase(
         processing_logs: Processing logs
         metadata: Additional metadata
         edition: Newsletter edition (daily, weekly, etc.)
-    
+
     Returns:
         True if successful, False otherwise
     """
-    
+
     client = await get_supabase_client()
-    
+
     if not client.is_available():
         logger.info("Supabase not available, skipping database save")
         return False
-    
+
     # Add error handling with fallback mechanisms
     content_saved = False
     logs_saved = False
-    
+
     # Try to save content with retries
     for attempt in range(3):
         try:
@@ -500,7 +499,7 @@ async def save_newsletter_to_supabase(
                     processing_id=processing_id,
                     final_error=str(e)
                 )
-    
+
     # Try to save logs with retries
     for attempt in range(3):
         try:
@@ -519,7 +518,7 @@ async def save_newsletter_to_supabase(
                     processing_id=processing_id,
                     final_error=str(e)
                 )
-    
+
     # Log final results
     if content_saved and logs_saved:
         logger.info(
@@ -548,33 +547,33 @@ async def save_newsletter_to_supabase(
 
 async def save_contextual_article(
     article: ProcessedArticle,
-    embedding: Optional[List[float]] = None,
-    topic_cluster: Optional[str] = None,
-    client: Optional[SupabaseClient] = None
-) -> Optional[str]:
+    embedding: list[float] | None = None,
+    topic_cluster: str | None = None,
+    client: SupabaseClient | None = None
+) -> str | None:
     """
     Save article to contextual_articles table.
-    
+
     Args:
         article: Processed article with all metadata
         embedding: Optional embedding vector
         topic_cluster: Optional topic cluster identifier
         client: Optional existing Supabase client
-    
+
     Returns:
         UUID of saved contextual article or None if failed
     """
-    
+
     if client is None:
         client = await get_supabase_client()
-    
+
     if not client.is_available():
         logger.debug("Supabase not available, skipping contextual article save")
         return None
-    
+
     try:
         raw_article = article.summarized_article.filtered_article.raw_article
-        
+
         # Prepare contextual article data
         contextual_data = {
             "article_id": raw_article.id,
@@ -590,13 +589,13 @@ async def save_contextual_article(
             "is_update": getattr(article, 'is_update', False),
             "embedding": embedding  # Store embedding directly in contextual_articles
         }
-        
+
         # Upsert contextual article
         result = client.client.table("contextual_articles").upsert(
             contextual_data,
             on_conflict="article_id"
         ).execute()
-        
+
         if result.data:
             logger.info(
                 "Saved contextual article to Supabase",
@@ -607,7 +606,7 @@ async def save_contextual_article(
         else:
             logger.error("Failed to save contextual article", result=result)
             return None
-            
+
     except Exception as e:
         logger.error(
             "Error saving contextual article",
@@ -622,12 +621,12 @@ async def save_article_relationship(
     child_article_uuid: str,
     relationship_type: str,
     similarity_score: float,
-    reasoning: Optional[str] = None,
-    client: Optional[SupabaseClient] = None
+    reasoning: str | None = None,
+    client: SupabaseClient | None = None
 ) -> bool:
     """
     Save article relationship to database.
-    
+
     Args:
         parent_article_uuid: UUID of parent article
         child_article_uuid: UUID of child article
@@ -635,18 +634,18 @@ async def save_article_relationship(
         similarity_score: Similarity score between articles
         reasoning: Optional reasoning for the relationship
         client: Optional existing Supabase client
-    
+
     Returns:
         True if successful, False otherwise
     """
-    
+
     if client is None:
         client = await get_supabase_client()
-    
+
     if not client.is_available():
         logger.debug("Supabase not available, skipping relationship save")
         return False
-    
+
     try:
         # Save relationship
         relationship_data = {
@@ -656,11 +655,11 @@ async def save_article_relationship(
             "similarity_score": similarity_score,
             "reasoning": reasoning
         }
-        
+
         result = client.client.table("article_relationships").insert(
             relationship_data
         ).execute()
-        
+
         if result.data:
             logger.info(
                 "Saved article relationship",
@@ -673,7 +672,7 @@ async def save_article_relationship(
         else:
             logger.error("Failed to save article relationship", result=result)
             return False
-            
+
     except Exception as e:
         logger.error(
             "Error saving article relationship",
@@ -687,33 +686,33 @@ async def save_article_relationship(
 async def get_recent_contextual_articles(
     days_back: int = 7,
     limit: int = 1000,
-    client: Optional[SupabaseClient] = None
-) -> List[Dict]:
+    client: SupabaseClient | None = None
+) -> list[dict]:
     """
     Get recent contextual articles with embeddings.
-    
+
     Args:
         days_back: Number of days to look back
         limit: Maximum number of articles to return
         client: Optional existing Supabase client
-    
+
     Returns:
         List of contextual articles with metadata
     """
-    
+
     if client is None:
         client = await get_supabase_client()
-    
+
     if not client.is_available():
         logger.debug("Supabase not available, returning empty contextual articles")
         return []
-    
+
     try:
         from datetime import datetime, timedelta
-        
+
         # Calculate cutoff date
         cutoff_date = datetime.now() - timedelta(days=days_back)
-        
+
         # Query contextual articles with embeddings
         result = client.client.table("contextual_articles").select(
             "id, article_id, title, content_summary, published_date, source_id, "
@@ -724,7 +723,7 @@ async def get_recent_contextual_articles(
         ).order(
             "published_date", desc=True
         ).limit(limit).execute()
-        
+
         if result.data:
             logger.info(
                 "Retrieved contextual articles from Supabase",
@@ -735,7 +734,7 @@ async def get_recent_contextual_articles(
         else:
             logger.info("No contextual articles found in Supabase")
             return []
-            
+
     except Exception as e:
         logger.error(
             "Error getting contextual articles",
@@ -748,38 +747,38 @@ async def get_recent_contextual_articles(
 async def find_related_articles_by_id(
     article_id: str,
     max_results: int = 5,
-    client: Optional[SupabaseClient] = None
-) -> List[Dict]:
+    client: SupabaseClient | None = None
+) -> list[dict]:
     """
     Find articles related to a given article by its ID.
-    
+
     Args:
         article_id: Article ID to find relationships for
         max_results: Maximum number of related articles
         client: Optional existing Supabase client
-    
+
     Returns:
         List of related articles with relationship metadata
     """
-    
+
     if client is None:
         client = await get_supabase_client()
-    
+
     if not client.is_available():
         return []
-    
+
     try:
         # First get the contextual article UUID
         article_result = client.client.table("contextual_articles").select("id").eq(
             "article_id", article_id
         ).execute()
-        
+
         if not article_result.data:
             logger.warning(f"Article not found: {article_id}")
             return []
-        
+
         article_uuid = article_result.data[0]["id"]
-        
+
         # Query relationships (both as parent and child)
         parent_result = client.client.table("article_relationships").select(
             "*, child_article:contextual_articles!child_article_id(*)"
@@ -788,7 +787,7 @@ async def find_related_articles_by_id(
         ).order(
             "similarity_score", desc=True
         ).limit(max_results).execute()
-        
+
         child_result = client.client.table("article_relationships").select(
             "*, parent_article:contextual_articles!parent_article_id(*)"
         ).eq(
@@ -796,10 +795,10 @@ async def find_related_articles_by_id(
         ).order(
             "similarity_score", desc=True
         ).limit(max_results).execute()
-        
+
         # Combine and format results
         related_articles = []
-        
+
         if parent_result.data:
             for rel in parent_result.data:
                 related_articles.append({
@@ -809,7 +808,7 @@ async def find_related_articles_by_id(
                     "reasoning": rel.get("reasoning"),
                     "direction": "child"
                 })
-        
+
         if child_result.data:
             for rel in child_result.data:
                 related_articles.append({
@@ -819,11 +818,11 @@ async def find_related_articles_by_id(
                     "reasoning": rel.get("reasoning"),
                     "direction": "parent"
                 })
-        
+
         # Sort by similarity score and limit
         related_articles.sort(key=lambda x: x["similarity_score"], reverse=True)
         return related_articles[:max_results]
-        
+
     except Exception as e:
         logger.error(f"Error finding related articles: {e}")
         return []

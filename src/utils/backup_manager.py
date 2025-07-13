@@ -34,4 +34,4 @@ def backup_file(file_path: str | Path) -> Path:
     dest = backup_dir / path.name
     shutil.copy2(path, dest)
     logger.info("Backup created", source=str(path), destination=str(dest))
-    return dest 
+    return dest

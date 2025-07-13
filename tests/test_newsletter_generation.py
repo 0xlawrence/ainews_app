@@ -7,7 +7,6 @@ without requiring external APIs or dependencies.
 """
 
 import sys
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -15,13 +14,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 try:
+    from jinja2 import Template
+
     from models.schemas import (
-        RawArticle, FilteredArticle, SummaryOutput, 
-        SummarizedArticle, ProcessedArticle
+        FilteredArticle,
+        ProcessedArticle,
+        RawArticle,
+        SummarizedArticle,
+        SummaryOutput,
     )
     from templates import daily_newsletter
-    from jinja2 import Template
-    
+
     IMPORTS_AVAILABLE = True
 except ImportError as e:
     print(f"Imports not available: {e}")
@@ -30,7 +33,7 @@ except ImportError as e:
 
 def create_mock_articles():
     """Create mock articles for testing."""
-    
+
     mock_articles = [
         {
             "id": "article_1",
@@ -42,7 +45,7 @@ def create_mock_articles():
             "source_type": "rss"
         },
         {
-            "id": "article_2", 
+            "id": "article_2",
             "title": "Google DeepMind Introduces Gemini Ultra 2.0",
             "url": "https://deepmind.google/blog/gemini-ultra-2",
             "published_date": datetime.now(),
@@ -54,47 +57,47 @@ def create_mock_articles():
             "id": "article_3",
             "title": "Anthropic Claude 4 Achieves New Safety Benchmarks",
             "url": "https://anthropic.com/claude-4-safety",
-            "published_date": datetime.now(), 
+            "published_date": datetime.now(),
             "content": "Anthropic has released Claude 4, which sets new standards for AI safety and alignment. The model demonstrates improved helpfulness while maintaining strong safety guardrails and reducing harmful outputs.",
             "source_id": "anthropic_news",
             "source_type": "rss"
         }
     ]
-    
+
     return mock_articles
 
 
 def create_mock_processed_articles():
     """Create mock processed articles with summaries."""
-    
+
     processed_articles = []
-    
+
     # Article 1: OpenAI GPT-5
     raw_article_1 = {
         "id": "article_1",
-        "title": "OpenAI Releases GPT-5 with Advanced Reasoning Capabilities", 
+        "title": "OpenAI Releases GPT-5 with Advanced Reasoning Capabilities",
         "url": "https://openai.com/blog/gpt-5-announcement",
         "published_date": datetime.now(),
         "content": "OpenAI announces GPT-5 with breakthrough reasoning...",
         "source_id": "openai_news",
         "source_type": "rss"
     }
-    
+
     summary_points_1 = [
         "OpenAI社がGPT-5を正式発表し、推論能力と数学的問題解決で大幅な性能向上を実現しました",
-        "マルチモーダル理解機能が強化され、複雑な科学的問題に対する解答精度が50%向上しています", 
+        "マルチモーダル理解機能が強化され、複雑な科学的問題に対する解答精度が50%向上しています",
         "企業向けAPIは2025年第2四半期から段階的に提供開始され、月額200ドルからの予定です",
         "研究機関との協力により、医療診断と材料科学分野での実用化が期待されています"
     ]
-    
-    # Article 2: Google Gemini Ultra 2.0  
+
+    # Article 2: Google Gemini Ultra 2.0
     summary_points_2 = [
         "Google DeepMind社がGemini Ultra 2.0を発表し、動画・音声・テキストの同時処理を実現しました",
         "従来比3倍の処理速度で複雑なマルチモーダルタスクを実行可能になっています",
         "YouTube動画の内容理解と要約生成機能が大幅に改善され、教育分野での活用が進んでいます",
         "Google Cloudサービスに2025年3月から統合予定で、開発者向けAPIも同時提供されます"
     ]
-    
+
     # Article 3: Anthropic Claude 4
     summary_points_3 = [
         "Anthropic社がClaude 4を発表し、AI安全性の新たなベンチマークを確立しました",
@@ -102,7 +105,7 @@ def create_mock_processed_articles():
         "Constitutional AIの進化により、自己学習による価値観の修正機能を実装しています",
         "企業向けカスタマーサポートでの導入が進み、満足度95%以上を記録しています"
     ]
-    
+
     articles_data = [
         {
             "raw_article": raw_article_1,
@@ -119,7 +122,7 @@ def create_mock_processed_articles():
             "raw_article": {
                 "id": "article_2",
                 "title": "Google DeepMind Introduces Gemini Ultra 2.0",
-                "url": "https://deepmind.google/blog/gemini-ultra-2", 
+                "url": "https://deepmind.google/blog/gemini-ultra-2",
                 "published_date": datetime.now(),
                 "content": "Google DeepMind unveils Gemini Ultra 2.0...",
                 "source_id": "google_research_blog",
@@ -135,12 +138,12 @@ def create_mock_processed_articles():
         },
         {
             "raw_article": {
-                "id": "article_3", 
+                "id": "article_3",
                 "title": "Anthropic Claude 4 Achieves New Safety Benchmarks",
                 "url": "https://anthropic.com/claude-4-safety",
                 "published_date": datetime.now(),
                 "content": "Anthropic releases Claude 4 with improved safety...",
-                "source_id": "anthropic_news", 
+                "source_id": "anthropic_news",
                 "source_type": "rss"
             },
             "summary_points": summary_points_3,
@@ -151,19 +154,19 @@ def create_mock_processed_articles():
             "is_update": True  # This is marked as an update
         }
     ]
-    
+
     return articles_data
 
 
 def generate_mock_newsletter():
     """Generate a mock newsletter with test data."""
-    
+
     print("🧪 Generating Mock Newsletter")
     print("=" * 50)
-    
+
     # Create mock articles
     articles_data = create_mock_processed_articles()
-    
+
     # Generate lead text
     lead_text = {
         "title": "AI業界の三大巨頭が次世代モデルを相次いで発表：激化する技術競争の最新動向",
@@ -175,10 +178,10 @@ def generate_mock_newsletter():
             "各社の技術的差別化が明確になる中、企業向けAPI提供や実用化スケジュールも本格化しており、AI業界の競争は新たな段階に入っています。"
         ]
     }
-    
+
     # Current date
     current_date = datetime.now()
-    
+
     # Processing summary
     processing_summary = {
         "articles_processed": 15,
@@ -186,10 +189,10 @@ def generate_mock_newsletter():
         "processing_time_seconds": 127.5,
         "success_rate": 95.2
     }
-    
+
     # Generation timestamp
     generation_timestamp = current_date.strftime("%Y年%m月%d日 %H:%M")
-    
+
     # Newsletter template (simplified)
     template_content = """# {{ date.strftime('%Y年%m月%d日') }} AI NEWS TLDR
 
@@ -234,19 +237,17 @@ def generate_mock_newsletter():
 {% endfor %}"""
 
     try:
-        from jinja2 import Template
-        
         # Create Jinja2 environment with custom filter
-        from jinja2 import Environment
-        
+        from jinja2 import Environment, Template
+
         def regex_replace(value, pattern, replacement):
             import re
             return re.sub(pattern, replacement, str(value))
-        
+
         env = Environment()
         env.filters['regex_replace'] = regex_replace
         template = env.from_string(template_content)
-        
+
         # Render newsletter
         newsletter_content = template.render(
             date=current_date,
@@ -255,32 +256,32 @@ def generate_mock_newsletter():
             processing_summary=processing_summary,
             generation_timestamp=generation_timestamp
         )
-        
+
         # Save to drafts directory
         drafts_dir = Path("drafts")
         drafts_dir.mkdir(exist_ok=True)
-        
+
         output_file = drafts_dir / f"{current_date.strftime('%Y-%m-%d')}_newsletter.md"
-        
+
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(newsletter_content)
-        
-        print(f"✅ Newsletter generated successfully!")
+
+        print("✅ Newsletter generated successfully!")
         print(f"📄 Output file: {output_file}")
         print(f"📊 Articles included: {len(articles_data)}")
         print(f"📝 Content length: {len(newsletter_content)} characters")
-        
+
         # Display preview
         print("\n" + "=" * 50)
         print("📖 NEWSLETTER PREVIEW")
         print("=" * 50)
         print(newsletter_content[:1000] + "...")
-        
+
         return True
-        
+
     except ImportError:
         print("❌ Jinja2 not available, generating simple text newsletter...")
-        
+
         # Simple text-based newsletter
         simple_newsletter = f"""# {current_date.strftime('%Y年%m月%d日')} AI NEWS TLDR
 
@@ -340,34 +341,34 @@ OpenAIのGPT-5は推論能力で大幅な向上を実現し、Google DeepMindの
 
 ---
 """
-        
+
         # Save simple newsletter
         drafts_dir = Path("drafts")
         drafts_dir.mkdir(exist_ok=True)
-        
+
         output_file = drafts_dir / f"{current_date.strftime('%Y-%m-%d')}_newsletter.md"
-        
+
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(simple_newsletter)
-        
-        print(f"✅ Simple newsletter generated successfully!")
+
+        print("✅ Simple newsletter generated successfully!")
         print(f"📄 Output file: {output_file}")
         print(f"📊 Articles included: {len(articles_data)}")
         print(f"📝 Content length: {len(simple_newsletter)} characters")
-        
+
         return True
 
 
 def main():
     """Main function to test newsletter generation."""
-    
+
     print("🚀 AI News Newsletter Generator - Test Mode")
     print("=" * 60)
     print("")
-    
+
     try:
         success = generate_mock_newsletter()
-        
+
         if success:
             print("\n" + "=" * 60)
             print("🎉 Test completed successfully!")
@@ -375,14 +376,14 @@ def main():
             print("📁 Check the 'drafts/' directory for the generated newsletter")
             print("🔍 This demonstrates the full newsletter generation pipeline with:")
             print("   • Structured article summaries in Japanese")
-            print("   • Multiple citation sources per article") 
+            print("   • Multiple citation sources per article")
             print("   • Update indicators (🆙) for follow-up stories")
             print("   • Professional newsletter formatting")
             print("   • Lead text with context analysis")
-            
+
         else:
             print("❌ Test failed")
-            
+
     except Exception as e:
         print(f"❌ Error during test: {e}")
         import traceback

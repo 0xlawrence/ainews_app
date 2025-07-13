@@ -8,7 +8,7 @@ for formatting company names, product names, and source identifiers.
 # Company name mappings (for consistent display)
 COMPANY_MAPPINGS = {
     "openai": "OpenAI",
-    "chatgpt": "ChatGPT", 
+    "chatgpt": "ChatGPT",
     "gpt": "GPT",
     "google": "Google",
     "alphabet": "Alphabet",
@@ -60,7 +60,7 @@ PRODUCT_MAPPINGS = {
 # Source name mappings for citation formatting
 SOURCE_MAPPINGS = {
     "techcrunch": "TechCrunch",
-    "theverge": "The Verge", 
+    "theverge": "The Verge",
     "the_verge": "The Verge",
     "wired": "WIRED",
     "openai_blog": "OpenAI Blog",
@@ -81,7 +81,7 @@ SOURCE_MAPPINGS = {
 # Enhanced source mappings with credibility indicators
 CREDIBLE_SOURCE_MAPPINGS = {
     "techcrunch": "TechCrunch",
-    "the_verge": "The Verge", 
+    "the_verge": "The Verge",
     "wired": "WIRED",
     "openai_news": "OpenAI Official",
     "google_research": "Google Research",

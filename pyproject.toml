@@ -78,6 +78,8 @@ extend-exclude = '''
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -91,10 +93,13 @@ ignore = [
     "E501",  # line too long, handled by black
     "B008",  # do not perform function calls in argument defaults
     "C901",  # too complex
+    "F401",  # imported but unused (common in __init__.py files)
+    "F841",  # assigned but never used (temporary variables)
 ]
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
+"tests/*.py" = ["F401", "F841"]  # Allow unused imports/variables in tests
 
 [tool.mypy]
 python_version = "3.11"

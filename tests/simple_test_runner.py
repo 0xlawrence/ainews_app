@@ -58,15 +58,15 @@ def create_mock_newsletter():
     """Create a mock newsletter file for testing."""
     # Create output directory
     os.makedirs("drafts", exist_ok=True)
-    
+
     # Generate filename with current timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M")
     filename = f"drafts/{timestamp}_daily_newsletter.md"
-    
+
     # Write mock content
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(mock_newsletter_content)
-    
+
     print(f"✅ Mock newsletter created: {filename}")
     return filename
 
@@ -74,38 +74,38 @@ def run_prd_compliance_test(newsletter_path):
     """Run PRD compliance test on the generated newsletter."""
     # Add current directory to Python path
     sys.path.insert(0, str(Path(__file__).parent))
-    
+
     try:
         from tests.test_prd_compliance import PRDComplianceChecker
-        
+
         print(f"\n🧪 Running PRD Compliance Tests on: {newsletter_path}")
         print("=" * 60)
-        
+
         checker = PRDComplianceChecker()
         results = checker.run_newsletter_compliance_tests(newsletter_path)
-        
+
         # Generate report
         report = checker.generate_compliance_report()
         print(report)
-        
+
         # Save report
         report_path = f"tests/mock_prd_compliance_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         os.makedirs("tests", exist_ok=True)
         with open(report_path, 'w', encoding='utf-8') as f:
             f.write(report)
         print(f"📄 Report saved to: {report_path}")
-        
+
         # Return overall success
         all_passed = all(results.values())
-        
+
         if all_passed:
             print("🎉 All PRD compliance tests passed!")
         else:
             failed_count = sum(1 for passed in results.values() if not passed)
             print(f"⚠️  {failed_count} tests failed. Please review implementation.")
-        
+
         return all_passed
-        
+
     except Exception as e:
         print(f"❌ Error running PRD compliance tests: {e}")
         return False
@@ -114,13 +114,13 @@ def main():
     """Main test function."""
     print("🧪 Simple Newsletter Generation Test")
     print("=" * 50)
-    
+
     # Create mock newsletter
     newsletter_path = create_mock_newsletter()
-    
+
     # Run PRD compliance tests
     success = run_prd_compliance_test(newsletter_path)
-    
+
     if success:
         print("\n✅ Mock newsletter meets PRD requirements!")
         print("📋 Next step: Run full newsletter generation with:")
@@ -129,7 +129,7 @@ def main():
         print("   python main.py --max-items 15 --edition daily")
     else:
         print("\n❌ Mock newsletter failed PRD compliance tests")
-    
+
     return success
 
 if __name__ == "__main__":

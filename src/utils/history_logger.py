@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Final
+from typing import Final
 
 from src.utils.logger import setup_logging
 
@@ -17,7 +17,7 @@ logger: Final = setup_logging()
 _HISTORY_FILE: Path = Path("logs") / "publish_history.jsonl"
 
 
-def record_publish(processing_id: str, result: Dict) -> None:
+def record_publish(processing_id: str, result: dict) -> None:
     """Append a single publish result to the history file."""
 
     _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -55,4 +55,4 @@ def compute_success_rate(window: int = 30) -> float:
         except json.JSONDecodeError:
             continue
 
-    return successes / len(recent) * 100.0 
+    return successes / len(recent) * 100.0

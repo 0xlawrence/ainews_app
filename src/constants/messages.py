@@ -31,7 +31,7 @@ DEFAULT_CONTENT = {
 # Status messages for logging
 STATUS_MESSAGES = {
     'processing_started': "処理を開始しました",
-    'processing_completed': "処理が完了しました", 
+    'processing_completed': "処理が完了しました",
     'article_skipped_duplicate': "重複記事のためスキップしました",
     'article_marked_update': "続報記事としてマークしました",
     'parallel_processing_started': "並列処理を開始しました",
@@ -53,7 +53,7 @@ TITLE_TEMPLATES = {
 # Quality validation messages
 VALIDATION_MESSAGES = {
     'content_too_short': "コンテンツが短すぎます",
-    'content_too_long': "コンテンツが長すぎます", 
+    'content_too_long': "コンテンツが長すぎます",
     'forbidden_phrases_detected': "禁止フレーズが検出されました",
     'low_quality_score': "品質スコアが低すぎます",
     'invalid_format': "フォーマットが無効です",
@@ -125,7 +125,7 @@ CLEANING_PATTERNS = {
     ],
     'title_prefixes': [
         r'^breaking[:\\s]*',
-        r'^exclusive[:\\s]*', 
+        r'^exclusive[:\\s]*',
         r'^report[:\\s]*',
         r'^[^:]+:\\s*',
         r'^\\w+\\s+\\w+\\s+(?:announces?|launches?|reveals?|unveils?)\\s+'
@@ -143,17 +143,17 @@ CLEANING_PATTERNS = {
         r'(GPT)の([^のGPT]+)\\1', # "GPTの機能GPT" -> "GPTの機能"
         r'(API)の([^のAPI]+)\\1', # "APIの実装API" -> "APIの実装"
         r'(SDK)の([^のSDK]+)\\1', # "SDKの利用SDK" -> "SDKの利用"
-        
+
         # Tech terms with particles
         r'(LLM|AI|GPT|API|SDK)で\\1',    # "LLMでLLM" -> "LLM"
-        r'(LLM|AI|GPT|API|SDK)が\\1',    # "AIがAI" -> "AI" 
+        r'(LLM|AI|GPT|API|SDK)が\\1',    # "AIがAI" -> "AI"
         r'(LLM|AI|GPT|API|SDK)を\\1',    # "GPTをGPT" -> "GPT"
-        
+
         # Broader duplication patterns
         r'(\\w+)の(\\w+)で\\1',           # "技術の実装で技術" -> "技術の実装"
         r'(\\w+)による(\\w+)\\1',         # "AIによる開発AI" -> "AIによる開発"
         r'(\\w+)で(\\w+)の\\1',           # "開発で技術の開発" -> "開発で技術"
-        
+
         # Company/product duplications
         r'(OpenAI|Anthropic|Google|Microsoft)の(\\w+)\\1',
         r'(ChatGPT|Claude|Gemini|Copilot)の(\\w+)\\1'

@@ -4,21 +4,22 @@ Test suite for source quality weighting functionality.
 This module tests the enhanced AI filter with domain-based source quality bonuses.
 """
 
-import pytest
-from datetime import datetime
 import uuid
-from unittest.mock import Mock, patch
+from datetime import datetime
+from unittest.mock import patch
+
+import pytest
 
 
 def test_source_quality_bonus_calculation():
     """Test source quality bonus calculation for different domain types."""
     # Mock the logger to avoid dependency issues
     with patch('src.utils.ai_filter.logger'):
-        from src.utils.ai_filter import AIContentFilter
         from src.models.schemas import RawArticle
-        
+        from src.utils.ai_filter import AIContentFilter
+
         filter_instance = AIContentFilter()
-        
+
         # Test official domain bonus
         official_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -28,10 +29,10 @@ def test_source_quality_bonus_calculation():
             published_date=datetime.now(),
             source_id="openai_news"
         )
-        
+
         bonus = filter_instance._calculate_source_quality_bonus(official_article)
         assert bonus >= 0.25  # Should get official domain or source ID bonus
-        
+
         # Test reputable domain bonus
         reputable_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -41,10 +42,10 @@ def test_source_quality_bonus_calculation():
             published_date=datetime.now(),
             source_id="techcrunch"
         )
-        
+
         bonus = filter_instance._calculate_source_quality_bonus(reputable_article)
         assert bonus >= 0.1  # Should get reputable domain bonus
-        
+
         # Test unknown domain
         unknown_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -54,7 +55,7 @@ def test_source_quality_bonus_calculation():
             published_date=datetime.now(),
             source_id="unknown_blog"
         )
-        
+
         bonus = filter_instance._calculate_source_quality_bonus(unknown_article)
         assert bonus == 0.0  # No bonus for unknown domains
 
@@ -62,11 +63,11 @@ def test_source_quality_bonus_calculation():
 def test_enhanced_relevance_scoring():
     """Test that relevance scoring includes source quality bonus."""
     with patch('src.utils.ai_filter.logger'):
-        from src.utils.ai_filter import AIContentFilter
         from src.models.schemas import RawArticle
-        
+        from src.utils.ai_filter import AIContentFilter
+
         filter_instance = AIContentFilter()
-        
+
         # Create two identical articles from different sources
         high_quality_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -76,7 +77,7 @@ def test_enhanced_relevance_scoring():
             published_date=datetime.now(),
             source_id="google_research"
         )
-        
+
         low_quality_article = RawArticle(
             id=str(uuid.uuid4()),
             title="AI breakthrough in machine learning",
@@ -85,10 +86,10 @@ def test_enhanced_relevance_scoring():
             published_date=datetime.now(),
             source_id="random_blog"
         )
-        
+
         high_score, _, _ = filter_instance._calculate_relevance(high_quality_article)
         low_score, _, _ = filter_instance._calculate_relevance(low_quality_article)
-        
+
         # High-quality source should have higher score
         assert high_score > low_score
 
@@ -96,11 +97,11 @@ def test_enhanced_relevance_scoring():
 def test_academic_domain_bonus():
     """Test bonus for academic and research domains."""
     with patch('src.utils.ai_filter.logger'):
-        from src.utils.ai_filter import AIContentFilter
         from src.models.schemas import RawArticle
-        
+        from src.utils.ai_filter import AIContentFilter
+
         filter_instance = AIContentFilter()
-        
+
         # Test arXiv paper
         arxiv_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -110,10 +111,10 @@ def test_academic_domain_bonus():
             published_date=datetime.now(),
             source_id="arxiv"
         )
-        
+
         bonus = filter_instance._calculate_source_quality_bonus(arxiv_article)
         assert bonus >= 0.2  # Academic sources get 20% bonus
-        
+
         # Test university domain
         edu_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -123,7 +124,7 @@ def test_academic_domain_bonus():
             published_date=datetime.now(),
             source_id="stanford_ai"
         )
-        
+
         bonus = filter_instance._calculate_source_quality_bonus(edu_article)
         assert bonus >= 0.2  # Academic domains get bonus
 
@@ -131,11 +132,11 @@ def test_academic_domain_bonus():
 def test_curated_source_bonus():
     """Test bonus for curated AI news sources."""
     with patch('src.utils.ai_filter.logger'):
-        from src.utils.ai_filter import AIContentFilter
         from src.models.schemas import RawArticle
-        
+        from src.utils.ai_filter import AIContentFilter
+
         filter_instance = AIContentFilter()
-        
+
         # Test curated source
         curated_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -145,7 +146,7 @@ def test_curated_source_bonus():
             published_date=datetime.now(),
             source_id="the_decoder"
         )
-        
+
         bonus = filter_instance._calculate_source_quality_bonus(curated_article)
         assert bonus >= 0.1  # Curated sources get bonus
 
@@ -156,12 +157,12 @@ def test_source_quality_fallback():
         # Mock import failure for constants
         with patch('src.utils.ai_filter.AIContentFilter._calculate_source_quality_bonus') as mock_bonus:
             mock_bonus.return_value = 0.0
-            
-            from src.utils.ai_filter import AIContentFilter
+
             from src.models.schemas import RawArticle
-            
+            from src.utils.ai_filter import AIContentFilter
+
             filter_instance = AIContentFilter()
-            
+
             test_article = RawArticle(
                 id=str(uuid.uuid4()),
                 title="Test article",
@@ -170,7 +171,7 @@ def test_source_quality_fallback():
                 published_date=datetime.now(),
                 source_id="test"
             )
-            
+
             # Should not crash even if constants unavailable
             score, keywords, reason = filter_instance._calculate_relevance(test_article)
             assert isinstance(score, float)
@@ -181,11 +182,11 @@ def test_source_quality_fallback():
 def test_url_parsing_edge_cases():
     """Test URL parsing for source quality bonus with edge cases."""
     with patch('src.utils.ai_filter.logger'):
-        from src.utils.ai_filter import AIContentFilter
         from src.models.schemas import RawArticle
-        
+        from src.utils.ai_filter import AIContentFilter
+
         filter_instance = AIContentFilter()
-        
+
         # Test invalid URL
         invalid_url_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -195,11 +196,11 @@ def test_url_parsing_edge_cases():
             published_date=datetime.now(),
             source_id="test"
         )
-        
+
         # Should not crash with invalid URL
         bonus = filter_instance._calculate_source_quality_bonus(invalid_url_article)
         assert bonus >= 0.0
-        
+
         # Test missing URL
         no_url_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -209,7 +210,7 @@ def test_url_parsing_edge_cases():
             published_date=datetime.now(),
             source_id="test_source"
         )
-        
+
         # Should not crash with missing URL
         bonus = filter_instance._calculate_source_quality_bonus(no_url_article)
         assert bonus >= 0.0
@@ -218,9 +219,9 @@ def test_url_parsing_edge_cases():
 def test_filter_integration():
     """Test that source quality weighting integrates properly with filtering."""
     with patch('src.utils.ai_filter.logger'):
-        from src.utils.ai_filter import filter_ai_content
         from src.models.schemas import RawArticle
-        
+        from src.utils.ai_filter import filter_ai_content
+
         # Create test articles with varying quality and sources
         articles = [
             RawArticle(
@@ -248,13 +249,13 @@ def test_filter_integration():
                 source_id="cooking_blog"
             )
         ]
-        
+
         # Filter articles
         filtered = filter_ai_content(articles, relevance_threshold=0.4)
-        
+
         # Should prioritize high-quality sources
         assert len(filtered) >= 1  # At least the OpenAI article should pass
-        
+
         # OpenAI article should have high score due to content + source quality
         openai_filtered = [f for f in filtered if "openai" in f.filter_reason.lower() or f.ai_relevance_score > 0.8]
         assert len(openai_filtered) >= 0  # Should be present if AI content is detected
@@ -263,11 +264,11 @@ def test_filter_integration():
 def test_youtube_source_handling():
     """Test source quality bonus for YouTube channels."""
     with patch('src.utils.ai_filter.logger'):
-        from src.utils.ai_filter import AIContentFilter
         from src.models.schemas import RawArticle
-        
+        from src.utils.ai_filter import AIContentFilter
+
         filter_instance = AIContentFilter()
-        
+
         # Test official YouTube channel
         youtube_article = RawArticle(
             id=str(uuid.uuid4()),
@@ -278,7 +279,7 @@ def test_youtube_source_handling():
             source_id="anthropic_youtube",
             source_type="youtube"
         )
-        
+
         # Should get bonus from source_id matching
         bonus = filter_instance._calculate_source_quality_bonus(youtube_article)
         # YouTube channels may not get direct domain bonus, but could get source_id bonus

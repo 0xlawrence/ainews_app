@@ -39,7 +39,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import Dict, Final, Optional
+from typing import Final
 
 import requests
 
@@ -50,7 +50,7 @@ logger: Final = logging.getLogger(__name__)
 # Public helpers
 # ---------------------------------------------------------------------------
 
-def publish_newsletter(file_path: str, *, edition: str = "daily", dry_run: bool = False) -> Dict:
+def publish_newsletter(file_path: str, *, edition: str = "daily", dry_run: bool = False) -> dict:
     """Publish the newsletter Markdown file to Quaily.
 
     Parameters
@@ -103,7 +103,7 @@ def publish_newsletter(file_path: str, *, edition: str = "daily", dry_run: bool 
             duration = time.time() - start
             logger.info("[Quaily] CLI publish succeeded", extra={"duration_sec": duration})
 
-            resp_payload: Dict | str
+            resp_payload: dict | str
             try:
                 resp_payload = json.loads(completed.stdout)
             except json.JSONDecodeError:
@@ -140,7 +140,7 @@ def publish_newsletter(file_path: str, *, edition: str = "daily", dry_run: bool 
         with path.open("r", encoding="utf-8") as fp:
             markdown_content = fp.read()
 
-        payload: Dict[str, Optional[str]] = {
+        payload: dict[str, str | None] = {
             "edition": edition,
             "filename": path.name,
         }
@@ -203,4 +203,4 @@ def _notify_slack(message: str) -> None:
                 "[Quaily] Slack notification failed", extra={"status_code": response.status_code, "text": response.text}
             )
     except Exception as exc:  # pylint: disable=broad-except
-        logger.debug("[Quaily] Slack notification error", exc_info=exc) 
+        logger.debug("[Quaily] Slack notification error", exc_info=exc)
