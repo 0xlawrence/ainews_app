@@ -10,15 +10,16 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
 
 def test_schemas():
     """Test Pydantic schemas."""
     print("Testing schemas...")
     
     try:
-        from models.schemas import SourceConfig, RawArticle, NewsletterConfig
+        from src.models.schemas import SourceConfig, RawArticle, NewsletterConfig
         
         # Test source config
         source = SourceConfig(
@@ -155,16 +156,26 @@ def test_command_line_interface():
         with open("main.py", "r") as f:
             main_content = f.read()
         
-        # Check for CLI components
-        cli_components = ["@click.command", "def main", "if __name__"]
-        missing_components = []
+        # Check for CLI components (argparse or click)
+        cli_components = ["def main", "if __name__"]
+        argparse_components = ["argparse.ArgumentParser", "parser.add_argument"]
+        click_components = ["@click.command", "@click.option"]
         
+        missing_components = []
         for component in cli_components:
             if component not in main_content:
                 missing_components.append(component)
         
+        # Check if either argparse or click is used
+        has_argparse = any(comp in main_content for comp in argparse_components)
+        has_click = any(comp in main_content for comp in click_components)
+        
         if missing_components:
             print(f"❌ CLI missing components: {missing_components}")
+            return False
+        
+        if not (has_argparse or has_click):
+            print("❌ CLI missing argument parsing (argparse or click)")
             return False
         
         print("✅ CLI interface present")

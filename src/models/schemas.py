@@ -40,9 +40,15 @@ class RawArticle(BaseModel):
     published_date: datetime = Field(..., description="Publication date")
     content: str = Field(..., description="Article content or description")
     source_id: str = Field(..., description="Source identifier")
-    source_type: Literal["rss", "youtube"] = Field(..., description="Source type")
+    source_type: Literal["rss", "youtube", "web"] = "rss"
     author: Optional[str] = Field(None, description="Author name")
     tags: List[str] = Field(default_factory=list, description="Article tags")
+    source_priority: Optional[int] = Field(None, description="Source priority (1=highest, 4=lowest)")
+    
+    def set_source_priority(self) -> None:
+        """Set source priority based on source_id using priority mapping."""
+        from src.constants.source_priorities import get_source_priority
+        self.source_priority = get_source_priority(self.source_id)
     
     @validator('content')
     def validate_content_length(cls, v):
@@ -217,6 +223,17 @@ class Citation(BaseModel):
     japanese_summary: Optional[str] = None
 
 
+class RelatedArticleReference(BaseModel):
+    """Reference to a related article with display metadata."""
+    
+    article_id: str = Field(..., description="Article identifier")
+    title: str = Field(..., description="Article title")
+    japanese_title: Optional[str] = Field(None, description="Japanese translated title")
+    url: str = Field(..., description="Article URL")
+    published_date: datetime = Field(..., description="Publication date")
+    similarity_score: Optional[float] = Field(None, description="Similarity score with current article")
+
+
 class ContextAnalysisResult(BaseModel):
     """Result from context analysis for article relationships."""
     
@@ -234,9 +251,9 @@ class ContextAnalysisResult(BaseModel):
         max_length=1000, 
         description="Context-aware summary if UPDATE"
     )
-    references: List[str] = Field(
+    references: List[RelatedArticleReference] = Field(
         default_factory=list, 
-        description="Related article IDs"
+        description="Related articles with full metadata for display"
     )
     similarity_score: float = Field(
         ..., 
@@ -285,6 +302,16 @@ class ProcessedArticle(BaseModel):
         default=False,
         description="Whether multi-source enhancement has been applied"
     )
+    
+    # Image embedding support
+    image_url: Optional[str] = Field(
+        None,
+        description="Public URL of processed image for newsletter embedding"
+    )
+    image_metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Image metadata (dimensions, source_type, file_size, etc.)"
+    )
 
     model_config = ConfigDict(extra='allow')
 
@@ -313,13 +340,13 @@ class NewsletterConfig(BaseModel):
     
     # AI filtering settings
     ai_relevance_threshold: float = Field(
-        default=0.50,  # Further lowered from 0.55 to 0.50
+        default=0.01,  # Lowered threshold to 1% to allow legitimate AI articles through
         ge=0.0, 
         le=1.0, 
         description="Minimum AI relevance score"
     )
     min_articles_target: int = Field(
-        default=7,     # Increased from 5 to 7
+        default=10,    # Increased from 7 to 10 for more content
         ge=1,
         le=20,
         description="Target minimum number of articles to achieve"
@@ -337,12 +364,12 @@ class NewsletterConfig(BaseModel):
     )
     max_retries: int = Field(default=3, ge=1, le=10, description="Max retry attempts")
     
-    # Duplicate detection settings
+    # PRD F-4準拠: 重複検出設定（SequenceRatio >0.85 または Jaccard >0.7）
     duplicate_similarity_threshold: float = Field(
-        default=0.75,  # Temporarily lowered to 0.75 for better 🆙 emoji detection
+        default=0.85,  # PRD F-4要件準拠：0.85以上で重複判定
         ge=0.0, 
         le=1.0, 
-        description="Similarity threshold for duplicates"
+        description="Similarity threshold for duplicates (PRD F-4 compliant)"
     )
 
     # Target date override (for backfill or specific-day generation)

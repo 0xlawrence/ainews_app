@@ -14,7 +14,7 @@
 ## 目次
 
 {% for article in articles %}
-{{ loop.index }}. {{ article.japanese_title | toc_format }}{% if article.is_update %} 🆙{% endif %}
+{{ loop.index }}. {{ article.japanese_title | toc_format }}
 
 {% endfor %}
 
@@ -22,7 +22,22 @@
 
 {%- for article in articles %}
 
-## {{ loop.index }}. {{ article.japanese_title }}{% if article.is_update %} 🆙{% endif %}
+## {{ loop.index }}. {{ article.japanese_title }}
+
+{%- if article.image_url %}
+{%- if article.image_metadata and article.image_metadata.source_type == 'youtube' %}
+{# YouTube video embedding - Substack compatible #}
+{% set video_url = article.summarized_article.filtered_article.raw_article.url %}
+[![{{ article.japanese_title }}]({{ article.image_url }})]({{ video_url }})
+
+📺 **YouTube動画** - [クリックして視聴]({{ video_url }})
+
+{%- else %}
+{# Regular article image - Substack compatible #}
+![{{ article.japanese_title }}]({{ article.image_url }})
+
+{%- endif %}
+{%- endif %}
 
 {%- if article.summarized_article and article.summarized_article.summary and article.summarized_article.summary.summary_points %}
 
@@ -35,15 +50,18 @@
 {% if article.citations %}
 {% for citation in article.citations %}
 {%- if citation and citation.source_name and citation.url %}
-> **{{ citation.source_name }}** ({{ citation.url }}): {{ citation.japanese_summary or citation.title or 'AI関連記事' }}
+> **{{ citation.source_name }}** ({{ citation.url }}): {{ citation.title }}
+> {{ citation.japanese_summary or 'AI関連記事の詳細情報' }}
 {%- endif %}
 {%- endfor %}
 {% endif %}
 
-{% if article.context_analysis and article.context_analysis.references %}
-**参考記事**: {% for ref in article.context_analysis.references %}[{{ ref }}](../search?q={{ ref }}){% if not loop.last %}, {% endif %}{% endfor %}
-{% endif %}
+{# 関連記事表記を完全削除 - ユーザー要求により不要 #}
 
+{% if not loop.last %}
+---
+
+{% endif %}
 {%- endfor %}
 
 ---

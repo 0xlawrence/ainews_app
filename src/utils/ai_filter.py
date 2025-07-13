@@ -40,7 +40,7 @@ class AIContentFilter:
             # AI Applications
             "ai assistant", "chatbot", "voice assistant", "ai model",
             "ai training", "ai inference", "ai safety", "ai alignment",
-            "automated", "automation", "intelligent", "smart",
+            "ai automated", "ai automation", "intelligent ai", "smart ai",
             
             # Human-Centered AI & Behavioral AI
             "empathetic", "empathy", "emotion", "emotional", "emotional intelligence",
@@ -108,6 +108,35 @@ class AIContentFilter:
             'drone', 'uav', 'military', '軍事', 'ドローン', '地政学', 'geopolitical'
         }
         
+        # STRICT BLACKLIST: Articles with these keywords are immediately rejected
+        self.blacklist_keywords = {
+            # Product reviews and consumer goods
+            '上履き', 'キャリオット', 'レビュー・口コミ', '商品レビュー', '製品テスト',
+            '洗えて使いやすい', '実力を徹底検証', '使用感', '耐久性',
+            
+            # Fashion and lifestyle
+            'ファッション', '衣類', 'アクセサリー', '美容', '化粧品', 'スキンケア',
+            '料理', 'レシピ', '食材', 'グルメ', 'レストラン',
+            
+            # Travel and leisure
+            '旅行', '観光地', 'ホテル', '航空券', '宿泊予約',
+            
+            # Sports and entertainment  
+            'スポーツ', '野球', 'サッカー', 'バスケ', '選手', '試合結果',
+            
+            # Shoes and clothing specifically
+            '靴', '履物', 'シューズ', 'スニーカー', 'ブーツ', 'サンダル',
+            'キッズ', '子供用品', '子供靴', 'ホワイト', '15cm',
+            
+            # Home appliances (non-AI)
+            'ファン', '扇風機', 'ヒートプロテクタント', 'スプレー', 'ヘアケア',
+            
+            # Business process articles without AI context
+            '週次レビュー', 'PDCA', '振り返り', 'レポート自動化', '業務改善',
+            'KPI分析', 'ダッシュボード', '業務プロセス', 'ワークフロー改善',
+            'PDCAサイクル', 'PDCA高速化', '形骸化', '振り返りが３分', '自動レポート'
+        }
+        
         # Compile regex patterns for efficiency
         self._compile_patterns()
     
@@ -126,6 +155,7 @@ class AIContentFilter:
         self.low_pattern = create_pattern(self.low_priority_keywords)
         self.negative_pattern = create_pattern(self.negative_keywords)
         self.penalty_pattern = create_pattern(self.penalty_keywords)
+        self.blacklist_pattern = create_pattern(self.blacklist_keywords)
     
     def filter_articles(
         self,
@@ -200,7 +230,7 @@ class AIContentFilter:
             if target_articles > len(filtered_articles):
                 # Find the score that would give us the target number of articles
                 new_threshold = article_scores[target_articles - 1][1]  # Score of the target_articles-th article
-                new_threshold = max(0.25, new_threshold)  # Lowered minimum from 0.30 to 0.25
+                new_threshold = max(0.15, new_threshold)  # Minimum 15% to prevent non-AI articles
                 
                 logger.info(
                     "Applying dynamic threshold adjustment",
@@ -250,6 +280,12 @@ class AIContentFilter:
         
         # Combine title and content for analysis
         text = f"{article.title} {article.content}".lower()
+        
+        # CRITICAL: Check blacklist first - immediate rejection
+        blacklist_matches = self.blacklist_pattern.findall(text)
+        if blacklist_matches:
+            logger.debug(f"Article rejected due to blacklist keywords: {blacklist_matches[:3]} in '{article.title[:50]}...'")
+            return 0.0, [], f"Blacklisted content detected: {', '.join(blacklist_matches[:3])}"
         
         # Find keyword matches
         high_matches = self.high_pattern.findall(text)
@@ -505,8 +541,8 @@ class AIContentFilter:
 
 def filter_ai_content(
     articles: List[RawArticle],
-    relevance_threshold: float = 0.45,  # Lowered from 0.50 to 0.45 for more articles
-    min_articles_target: int = 8,       # Increased from 7 to 8 for better coverage
+    relevance_threshold: float = 0.01,  # Lowered threshold to 1% to allow legitimate AI articles
+    min_articles_target: int = 10,      # PRD-compliant target for 7-10 articles
     dynamic_threshold: bool = True
 ) -> List[FilteredArticle]:
     """

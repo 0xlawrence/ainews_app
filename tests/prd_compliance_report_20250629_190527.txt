@@ -1,0 +1,44 @@
+
+📊 PRD Compliance Test Report
+Generated: 2025-06-29 19:05:27
+
+SUMMARY:
+- Total Tests: 5
+- Passed: 4
+- Failed: 1
+- Success Rate: 80.0%
+
+DETAILED RESULTS:
+
+[PASS] Article Count Guarantee (F-15): Found 10 articles (requirement: 7-10)
+  - article_count: 10
+  - target_range: 7-10
+  - compliant: True
+  - headers_found: ['## AI技術革新', '### **OpenAI、GPT-5の性能向上を発表** 🆙', '### **Google、Gemini 2.0で新たなAIアシスタント機能を追加**', '### **Meta、LLaMAモデルの多言語対応を拡張**', '### **Microsoft Azure AI、企業向けカスタムモデル構築サービス開始**']
+
+[PASS] UPDATE Detection (F-16): Update detection working properly
+  - update_keywords_found: 4
+  - update_emojis_found: 2
+  - has_updates: True
+  - has_emojis: True
+  - compliant: True
+
+[PASS] Citation Diversity (F-15): Citation diversity check
+  - total_citations: 8
+  - unique_citations: 8
+  - duplicate_count: 0
+  - duplication_rate: 0.00%
+  - unique_domains: 8
+  - compliant: True
+
+[FAIL] Japanese Output: Japanese character ratio: 51.9%
+  - japanese_chars: 756
+  - total_chars: 1458
+  - japanese_ratio: 51.9%
+  - target_ratio: ≥60%
+  - compliant: False
+
+[PASS] Template Compliance: Template structure check
+  - sections_found: {'section_0': 1, 'section_1': 10, 'section_2': 8, 'section_3': 8}
+  - missing_sections: []
+  - compliant: True

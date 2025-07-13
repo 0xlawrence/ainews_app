@@ -29,7 +29,7 @@ except ImportError:
 from src.models.schemas import ProcessedArticle, SummarizedArticle
 from src.utils.embedding_manager import EmbeddingManager
 from src.utils.logger import setup_logging
-from src.constants.settings import LLM_SETTINGS, SIMILARITY_THRESHOLDS
+from src.config.settings import get_settings
 
 try:
     from src.llm.llm_router import LLMRouter
@@ -52,26 +52,56 @@ class TopicCluster:
     article_count: int
     
     def get_citations(self, max_citations: int = 3) -> List[str]:
-        """Get citation strings for related articles."""
+        """Get citation strings for related articles with F-15 duplicate prevention."""
         citations = []
+        used_urls = set()  # Track URLs to prevent duplicates
+        used_sources = set()  # Track source IDs to ensure diversity per F-15
         
         # Add representative article citation
         rep_article = self.representative_article.summarized_article
         rep_raw = rep_article.filtered_article.raw_article
         
+        # Normalize URL for duplicate checking
+        from src.utils.citation_generator import CitationGenerator
+        temp_generator = CitationGenerator()
+        rep_url_normalized = temp_generator._normalize_url(rep_raw.url)
+        
         citations.append(
             f"**{rep_raw.source_id.title()}** ({str(rep_raw.url)}): {rep_raw.title}"
         )
+        used_urls.add(rep_url_normalized)
+        used_sources.add(rep_raw.source_id)
         
-        # Add related article citations (up to max_citations - 1)
-        for article in self.related_articles[:max_citations - 1]:
+        # Add related article citations (ensuring different sources per F-15)
+        for article in self.related_articles:
+            if len(citations) >= max_citations:
+                break
+                
             raw_article = article.summarized_article.filtered_article.raw_article
             url_str = str(raw_article.url)
+            
+            # Skip dummy placeholders
             if "video_example" in url_str:
-                continue  # skip dummy placeholders
-            citations.append(
-                f"**{raw_article.source_id.title()}** ({url_str}): {raw_article.title}"
-            )
+                continue
+            
+            # F-15 compliance: Ensure different sources per article
+            article_url_normalized = temp_generator._normalize_url(raw_article.url)
+            if (article_url_normalized not in used_urls and 
+                raw_article.source_id not in used_sources):
+                
+                citations.append(
+                    f"**{raw_article.source_id.title()}** ({url_str}): {raw_article.title}"
+                )
+                used_urls.add(article_url_normalized)
+                used_sources.add(raw_article.source_id)
+        
+        logger.info(
+            f"Generated {len(citations)} citations for cluster {self.cluster_id}",
+            sources_used=list(used_sources),
+            duplicates_prevented=len([a for a in self.related_articles if 
+                temp_generator._normalize_url(a.summarized_article.filtered_article.raw_article.url) in used_urls or
+                a.summarized_article.filtered_article.raw_article.source_id in used_sources]) - len(citations) + 1
+        )
         
         return citations
 
@@ -81,6 +111,7 @@ class TopicClusterer:
     
     def __init__(self, embedding_manager: Optional[EmbeddingManager] = None):
         """Initialize topic clusterer."""
+        self.settings = get_settings()
         self.embedding_manager = embedding_manager or EmbeddingManager()
         
         if not SKLEARN_AVAILABLE:
@@ -101,7 +132,7 @@ class TopicClusterer:
         articles: List[ProcessedArticle],
         max_clusters: int = 7,
         min_cluster_size: int = 2,
-        similarity_threshold: float = 0.8
+        similarity_threshold: float = 0.9  # Increased from 0.8 to 0.9 for tighter clustering
     ) -> List[TopicCluster]:
         """
         Cluster articles by topic and generate representative clusters.
@@ -560,7 +591,7 @@ class TopicClusterer:
                 # Generate topic name using LLM
                 topic_name = await self.llm_router.generate_simple_text(
                     prompt=prompt,
-                    model=LLM_SETTINGS["topic_naming_model"]
+                    model=self.settings.llm.topic_naming_model
                 )
                 
                 if topic_name and topic_name.strip():
@@ -716,7 +747,7 @@ class TopicClusterer:
             distance_matrix = (1 - sim_matrix).astype(np.double)
             
             # Use configurable threshold from settings, much more lenient for multi-source detection
-            similarity_threshold = SIMILARITY_THRESHOLDS['multi_source_detection']
+            similarity_threshold = self.settings.embedding.multi_source_detection_threshold
             
             groups = []
             processed_indices = set()
@@ -825,6 +856,11 @@ class TopicClusterer:
         """
         if len(cluster_articles) < 2:
             return False, [], np.array([])
+            
+        # CRITICAL: Domain-based semantic validation before similarity checks
+        if not self._validate_topic_domain_coherence(cluster_articles):
+            logger.info(f"Rejected cluster due to topic domain incoherence: {[a.summarized_article.filtered_article.raw_article.title[:30] + '...' for a in cluster_articles]}")
+            return False, [], np.array([])
         
         # Calculate pairwise similarities within cluster
         similarities = cosine_similarity(cluster_embeddings)
@@ -846,6 +882,11 @@ class TopicClusterer:
         filtered_articles = [cluster_articles[i] for i in coherent_indices]
         filtered_embeddings = cluster_embeddings[coherent_indices]
         
+        # CRITICAL: Re-validate domain coherence after filtering
+        if not self._validate_topic_domain_coherence(filtered_articles):
+            logger.info(f"Rejected filtered cluster due to remaining domain incoherence")
+            return False, [], np.array([])
+        
         # Calculate final coherence score
         if len(coherent_indices) < len(cluster_articles):
             # Some articles were filtered out
@@ -863,6 +904,69 @@ class TopicClusterer:
         )
         
         return is_coherent, filtered_articles, filtered_embeddings
+    
+    def _validate_topic_domain_coherence(self, articles: List[ProcessedArticle]) -> bool:
+        """
+        Validate that all articles in a cluster belong to the same topic domain.
+        
+        Args:
+            articles: List of articles to validate
+            
+        Returns:
+            True if articles are domain-coherent, False otherwise
+        """
+        if len(articles) < 2:
+            return True
+            
+        # Define mutually exclusive topic domains
+        topic_domains = {
+            'hr_recruitment': ['hiring', 'recruitment', '採用', '人材', 'linkedin', '求人', 'job search', 'talent acquisition'],
+            'research_technical': ['research', 'researcher', '研究', '技術', 'model', 'モデル', 'algorithm', 'api', 'technical'],
+            'economic_policy': ['economy', 'economic', '経済', '失業', '雇用喪失', 'job losses', 'policy', '政策'],
+            'business_finance': ['investment', 'funding', 'ipo', 'valuation', '投資', 'venture', 'startup', 'business'],
+            'product_tools': ['cli', 'api', 'tool', 'ツール', 'product', '製品', 'feature', '機能'],
+            'local_infrastructure': ['ollama', 'local', 'ローカル', 'infrastructure', 'self-hosted']
+        }
+        
+        # Classify each article by domain
+        article_domains = []
+        for article in articles:
+            raw_article = article.summarized_article.filtered_article.raw_article
+            article_text = (raw_article.title + " " + (raw_article.content or "")).lower()
+            
+            detected_domains = []
+            for domain, keywords in topic_domains.items():
+                if any(keyword in article_text for keyword in keywords):
+                    detected_domains.append(domain)
+            
+            article_domains.append(detected_domains)
+        
+        # Check for domain conflicts
+        mutually_exclusive_pairs = [
+            ('hr_recruitment', 'research_technical'),
+            ('economic_policy', 'hr_recruitment'),
+            ('business_finance', 'research_technical'),
+            ('local_infrastructure', 'economic_policy'),
+        ]
+        
+        for i, domains1 in enumerate(article_domains):
+            for j, domains2 in enumerate(article_domains):
+                if i >= j:
+                    continue
+                    
+                for domain1 in domains1:
+                    for domain2 in domains2:
+                        for exclusive1, exclusive2 in mutually_exclusive_pairs:
+                            if (domain1 == exclusive1 and domain2 == exclusive2) or \
+                               (domain1 == exclusive2 and domain2 == exclusive1):
+                                logger.info(
+                                    f"Domain conflict detected: {domain1} vs {domain2} "
+                                    f"between articles '{articles[i].summarized_article.filtered_article.raw_article.title[:50]}...' "
+                                    f"and '{articles[j].summarized_article.filtered_article.raw_article.title[:50]}...'"
+                                )
+                                return False
+        
+        return True
 
     def _calculate_topic_importance(
         self, 
@@ -983,28 +1087,44 @@ async def cluster_articles_with_multi_source_priority(
             representative.is_multi_source = True
             
             # --- multi-source enhancement情報を代表記事に埋め込む ---
-            # 1) Filter only truly related articles (> 0.75 AI relevance)
+            # 1) Filter only truly related articles (> 0.75 AI relevance) and ensure source diversity
             high_relevance_articles = [
                 art for art in topic_data['articles']
                 if art.summarized_article.filtered_article.ai_relevance_score > 0.75
             ]
             
-            # 2) Sort by AI relevance and take top 3
-            sorted_cluster_articles = sorted(
-                high_relevance_articles if high_relevance_articles else topic_data['articles'],
-                key=lambda a: a.summarized_article.filtered_article.ai_relevance_score,
-                reverse=True,
-            )
-
-            top_articles = sorted_cluster_articles[:3]
+            # 2) F-15 compliance: Ensure different sources for citations
+            used_sources = {representative.summarized_article.filtered_article.raw_article.source_id}
+            diverse_articles = [representative]  # Start with representative
+            
+            for article in high_relevance_articles:
+                source_id = article.summarized_article.filtered_article.raw_article.source_id
+                if source_id not in used_sources and len(diverse_articles) < 3:
+                    diverse_articles.append(article)
+                    used_sources.add(source_id)
+            
+            # If we don't have enough diverse sources, fill with any high relevance articles
+            if len(diverse_articles) < 3:
+                for article in high_relevance_articles:
+                    if article not in diverse_articles and len(diverse_articles) < 3:
+                        diverse_articles.append(article)
+            
+            # 3) Sort by AI relevance and take top articles (ensuring representative is first)
+            top_articles = diverse_articles[:3]
 
             representative.source_urls = [
                 art.summarized_article.filtered_article.raw_article.url for art in top_articles
             ]
 
-            # 3) 集約処理用に上位記事を保存
+            # 4) 集約処理用に上位記事を保存
             #    後段で NewsletterGenerator が参照したあとに削除することで循環参照を防止する
             representative._multi_articles_tmp = top_articles  # private 属性扱い
+            
+            logger.info(
+                f"Enhanced multi-source topic with {len(used_sources)} different sources",
+                topic_title=topic_data['topic_title'],
+                sources_used=list(used_sources)
+            )
         
         final_articles.append(representative)
         articles_added += 1

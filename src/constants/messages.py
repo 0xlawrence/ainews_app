@@ -135,5 +135,27 @@ CLEANING_PATTERNS = {
         r'\\s*\\(updated?\\)$',
         r'\\s*- report$',
         r'\\s*\\|\\s*[^|]+$'
+    ],
+    'duplicate_patterns': [
+        # LLM tech term duplications
+        r'(LLM)の([^のLLM]+)\\1',  # "LLMの技術LLM" -> "LLMの技術"
+        r'(AI)の([^のAI]+)\\1',   # "AIの活用AI" -> "AIの活用"
+        r'(GPT)の([^のGPT]+)\\1', # "GPTの機能GPT" -> "GPTの機能"
+        r'(API)の([^のAPI]+)\\1', # "APIの実装API" -> "APIの実装"
+        r'(SDK)の([^のSDK]+)\\1', # "SDKの利用SDK" -> "SDKの利用"
+        
+        # Tech terms with particles
+        r'(LLM|AI|GPT|API|SDK)で\\1',    # "LLMでLLM" -> "LLM"
+        r'(LLM|AI|GPT|API|SDK)が\\1',    # "AIがAI" -> "AI" 
+        r'(LLM|AI|GPT|API|SDK)を\\1',    # "GPTをGPT" -> "GPT"
+        
+        # Broader duplication patterns
+        r'(\\w+)の(\\w+)で\\1',           # "技術の実装で技術" -> "技術の実装"
+        r'(\\w+)による(\\w+)\\1',         # "AIによる開発AI" -> "AIによる開発"
+        r'(\\w+)で(\\w+)の\\1',           # "開発で技術の開発" -> "開発で技術"
+        
+        # Company/product duplications
+        r'(OpenAI|Anthropic|Google|Microsoft)の(\\w+)\\1',
+        r'(ChatGPT|Claude|Gemini|Copilot)の(\\w+)\\1'
     ]
 }

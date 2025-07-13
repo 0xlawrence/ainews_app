@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from src.llm.llm_router import LLMRouter
-from src.models.schemas import ContextAnalysisResult, SummarizedArticle
+from src.models.schemas import ContextAnalysisResult, SummarizedArticle, RelatedArticleReference
 from src.utils.embedding_manager import EmbeddingManager
 from src.utils.logger import setup_logging
 
@@ -200,7 +200,7 @@ class ContextAnalyzer:
             
             # Prepare similar articles info
             past_news_text = ""
-            reference_ids = []
+            reference_objects = []
             
             for i, article in enumerate(similar_articles):
                 past_news_text += f"\n{i+1}. **{article['title']}**\n"
@@ -208,7 +208,64 @@ class ContextAnalyzer:
                 past_news_text += f"   類似度: {article['similarity_score']:.3f}\n"
                 past_news_text += f"   要約: {article['content_summary'][:200]}...\n"
                 
-                reference_ids.append(article['article_id'])
+                # Create RelatedArticleReference object with full metadata
+                from datetime import datetime
+                
+                # Try multiple URL field names to ensure we get a valid URL
+                url = (article.get('source_url') or 
+                       article.get('url') or 
+                       article.get('link') or 
+                       article.get('source', {}).get('url') or
+                       '')
+                
+                # Handle datetime parsing safely
+                try:
+                    if isinstance(article['published_date'], str):
+                        pub_date = datetime.fromisoformat(article['published_date'].replace('Z', '+00:00'))
+                    else:
+                        pub_date = article['published_date']
+                except (ValueError, KeyError):
+                    pub_date = datetime.now()
+                
+                # Generate Japanese title if available
+                japanese_title = article.get('japanese_title')
+                if not japanese_title and await self._needs_translation(article['title']):
+                    japanese_title = await self._generate_simple_japanese_title(article['title'])
+                
+                # Ensure URL is not empty
+                if not url or url == '' or url == 'None':
+                    # Try to construct specific URL from article metadata first
+                    article_title_slug = self._generate_url_slug(article['title'])
+                    source_id = article.get('source_id', 'unknown').lower()
+                    
+                    if 'techcrunch' in source_id:
+                        # Try to create a more specific TechCrunch search URL
+                        url = f"https://techcrunch.com/search/{article['article_id']}"
+                    elif 'zenn' in source_id:
+                        # Try to create more specific Zenn URLs based on content
+                        if article_title_slug:
+                            url = f"https://zenn.dev/search?q={article_title_slug[:50]}"
+                        else:
+                            url = f"https://zenn.dev/topics/ai"
+                    elif 'github' in source_id:
+                        url = f"https://github.com/search?q={article_title_slug[:50]}&type=repositories"
+                    elif 'youtube' in source_id:
+                        url = f"https://www.youtube.com/results?search_query={article_title_slug[:50]}"
+                    elif 'reddit' in source_id:
+                        url = f"https://www.reddit.com/search/?q={article_title_slug[:50]}"
+                    else:
+                        # More descriptive anchor fallback
+                        url = f"#{article['article_id']}"
+                
+                ref_obj = RelatedArticleReference(
+                    article_id=article['article_id'],
+                    title=article['title'],
+                    japanese_title=japanese_title,
+                    url=url,
+                    published_date=pub_date,
+                    similarity_score=article['similarity_score']
+                )
+                reference_objects.append(ref_obj)
             
             # Create analysis prompt
             prompt = self.prompts["context_analysis_prompt"].format(
@@ -245,13 +302,40 @@ class ContextAnalyzer:
                 # Parse LLM response
                 analysis_data = self._parse_llm_response(response)
                 
-                # Create result with proper validation
+                # CRITICAL: Validate SKIP decisions to prevent over-filtering
+                # PRD F-5 requires 10 articles, so SKIP must be extremely conservative
+                max_similarity = similar_articles[0]["similarity_score"] if similar_articles else 0.0
+                decision = analysis_data.get("decision", "KEEP")
+                
+                # Override inappropriate SKIP decisions
+                if decision == "SKIP" and max_similarity < 0.998:  # 99.8% threshold per prompt
+                    # If LLM says SKIP but similarity < 99.8%, override to UPDATE or KEEP
+                    if max_similarity > 0.75:
+                        decision = "UPDATE"
+                        analysis_data["reasoning"] = f"LLMのSKIP判定を修正：類似度{max_similarity:.3f}では続報として処理が適切"
+                        logger.info(
+                            "Overrode inappropriate SKIP decision to UPDATE",
+                            article_id=article_id,
+                            similarity=max_similarity,
+                            original_reasoning=analysis_data.get("reasoning", "")
+                        )
+                    else:
+                        decision = "KEEP"
+                        analysis_data["reasoning"] = f"LLMのSKIP判定を修正：類似度{max_similarity:.3f}では独立記事として処理が適切"
+                        logger.info(
+                            "Overrode inappropriate SKIP decision to KEEP",
+                            article_id=article_id,
+                            similarity=max_similarity,
+                            original_reasoning=analysis_data.get("reasoning", "")
+                        )
+                
+                # Create result with validated decision
                 result = ContextAnalysisResult(
-                    decision=analysis_data.get("decision", "KEEP"),
+                    decision=decision,
                     reasoning=analysis_data.get("reasoning", "LLM分析完了"),
                     contextual_summary=analysis_data.get("contextual_summary"),
-                    references=reference_ids[:3],  # Limit references
-                    similarity_score=similar_articles[0]["similarity_score"] if similar_articles else 0.0
+                    references=reference_objects[:3],  # Limit references
+                    similarity_score=max_similarity
                 )
                 
                 logger.info(
@@ -268,15 +352,16 @@ class ContextAnalyzer:
             except Exception as llm_error:
                 logger.error("LLM context analysis failed", error=str(llm_error))
                 
-                # Fallback decision based on similarity scores - 調整済み閾値でUPDATE検出を改善
+                # F-16 UPDATE detection reconstruction - improved thresholds for reliable 🆙 emoji assignment
                 max_similarity = similar_articles[0]["similarity_score"] if similar_articles else 0.0
                 
-                if max_similarity > 0.85:
+                # CRITICAL: Even stricter thresholds to prevent 🆙 emoji overuse
+                if max_similarity > 0.998:  # 99.8%+ similarity = SKIP (virtually identical)
                     decision = "SKIP"
-                    reasoning = f"高い類似度（{max_similarity:.3f}）により重複と判定"
-                elif max_similarity > 0.65:  # 閾値を下げてUPDATE検出を改善
+                    reasoning = f"極めて高い類似度（{max_similarity:.3f}）により重複と判定"
+                elif max_similarity > 0.92:  # 92%+ similarity = UPDATE (ultra strict threshold)
                     decision = "UPDATE"
-                    reasoning = f"中程度の類似度（{max_similarity:.3f}）により続報と判定"
+                    reasoning = f"極めて高い類似度（{max_similarity:.3f}）により明確な続報と判定 - 🆙絵文字付与"
                 else:
                     decision = "KEEP"
                     reasoning = f"類似度（{max_similarity:.3f}）により独立記事と判定"
@@ -285,7 +370,7 @@ class ContextAnalyzer:
                     decision=decision,
                     reasoning=reasoning,
                     contextual_summary=None,
-                    references=reference_ids[:3],
+                    references=reference_objects[:3],
                     similarity_score=max_similarity
                 )
                 
@@ -311,8 +396,9 @@ class ContextAnalyzer:
         # since we need JSON response rather than structured summary
         from langchain_core.messages import HumanMessage, SystemMessage
         
-        # Try each model in fallback order
-        for model_name in self.llm_router.fallback_order:
+        # Try each model in fallback order (primary + fallback models)
+        all_models = self.llm_router.primary_models + self.llm_router.fallback_models
+        for model_name in all_models:
             try:
                 client = self.llm_router._get_client(model_name)
                 
@@ -364,6 +450,101 @@ class ContextAnalyzer:
         except Exception as e:
             logger.error("Unexpected error parsing LLM response", error=str(e))
             return {"decision": "KEEP", "reasoning": "解析エラー"}
+    
+    async def _needs_translation(self, title: str) -> bool:
+        """Check if title needs Japanese translation."""
+        import re
+        
+        # Simple heuristic: if title contains mostly non-Japanese characters
+        japanese_chars = re.findall(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', title)
+        total_chars = len(re.findall(r'[a-zA-Z0-9\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', title))
+        
+        if total_chars == 0:
+            return True
+            
+        japanese_ratio = len(japanese_chars) / total_chars
+        return japanese_ratio < 0.5  # Less than 50% Japanese characters
+    
+    async def _generate_simple_japanese_title(self, title: str) -> Optional[str]:
+        """Generate simple Japanese title translation."""
+        try:
+            if not self.llm_router:
+                return None
+                
+            prompt = f"""以下の英語記事タイトルを日本語に翻訳してください。
+
+タイトル: {title}
+
+要求:
+- 自然で読みやすい日本語
+- 50文字以内
+- 専門用語を適切に翻訳
+
+翻訳:"""
+
+            translation = await self.llm_router.generate_simple_text(
+                prompt=prompt,
+                max_tokens=100,
+                temperature=0.2
+            )
+            
+            if translation:
+                # Clean response
+                translation = translation.strip()
+                # Remove common prefixes
+                import re
+                translation = re.sub(r'^(翻訳[：:]?\s*|日本語[：:]?\s*)', '', translation)
+                translation = translation.strip('"\'「」')
+                
+                if len(translation) > 3 and len(translation) <= 60:
+                    return translation
+                    
+        except Exception as e:
+            logger.warning(f"Failed to generate Japanese title translation: {e}")
+        
+        return None
+    
+    def _generate_url_slug(self, title: str) -> str:
+        """Generate URL-friendly slug from article title."""
+        import re
+        import urllib.parse
+        
+        if not title:
+            return ""
+        
+        # Remove common prefixes and suffixes
+        title = re.sub(r'^(【[^】]*】|\\[.*?\\]|\d+[\.\)]\s*)', '', title)
+        title = re.sub(r'(🆙|[\u2600-\u26FF\u2700-\u27BF])', '', title)  # Remove emojis
+        
+        # Extract key terms (company names, tech terms, etc.)
+        # Look for capitalized words, quoted terms, and key phrases
+        key_terms = []
+        
+        # Extract quoted terms
+        quoted_terms = re.findall(r'[「『"\'](.*?)[」』"\']', title)
+        key_terms.extend(quoted_terms)
+        
+        # Extract English tech terms and company names
+        english_terms = re.findall(r'\\b[A-Z][a-zA-Z]*(?:[A-Z][a-zA-Z]*)*\\b', title)
+        key_terms.extend(english_terms)
+        
+        # Extract Japanese tech terms
+        tech_terms = re.findall(r'(AI|LLM|API|CLI|GPU|CPU|SDK|開発|技術|システム|ツール|プラットフォーム)', title)
+        key_terms.extend(tech_terms)
+        
+        # If we have key terms, use them
+        if key_terms:
+            # Take the most relevant terms (first 3)
+            selected_terms = key_terms[:3]
+            slug = ' '.join(selected_terms)
+        else:
+            # Fallback to first few words
+            words = title.split()[:4]
+            slug = ' '.join(words)
+        
+        # URL encode for search queries
+        slug = urllib.parse.quote_plus(slug)
+        return slug
 
 
 async def analyze_article_context(

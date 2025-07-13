@@ -1,19 +1,77 @@
 """
 Application settings and configuration constants.
 
-This module centralizes all numeric thresholds, limits, and configuration
-values used throughout the application.
+This module is **deprecated**. All new code should import
+`src.config.settings` and use `get_settings()` instead.
+For backward compatibility, we expose read-only snapshots of
+commonly used dictionaries, constructed from the current
+AppSettings instance so values stay in sync.
 """
+
+from __future__ import annotations
+
+import warnings
+from types import MappingProxyType
+
+from src.config.settings import get_settings
+
+_s = get_settings()
+
+# Emit deprecation warning once per interpreter
+warnings.warn(
+    "`src.constants.settings` is deprecated. Import from `src.config.settings` instead.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+# ---------------------------------------------------------------------------
+# Helper builders – create read-only dictionaries that mirror new settings
+# ---------------------------------------------------------------------------
+
+
+def _build_similarity_thresholds():
+    return {
+        "duplicate_jaccard": _s.embedding.duplicate_similarity_threshold,
+        "duplicate_sequence": _s.embedding.duplicate_similarity_threshold,
+        "duplicate_main": _s.embedding.duplicate_similarity_threshold,
+        "context_similarity": _s.embedding.context_similarity_threshold,
+        "enhanced_diff_threshold": 0.15,
+        "ai_relevance_high": 0.75,
+        "multi_source_detection": 0.85,
+    }
+
+
+def _build_llm_settings():
+    return {
+        "retry_delay": _s.llm.retry_delay,
+        "max_retries": _s.llm.max_retries,
+        "timeout_seconds": _s.llm.timeout,
+        "summary_max_tokens": 250,
+        "title_max_tokens": 150,
+        "citation_max_tokens": 200,
+        "temperature_conservative": 0.1,
+        "temperature_balanced": 0.2,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Public (legacy) constants
+# ---------------------------------------------------------------------------
+
+SIMILARITY_THRESHOLDS = MappingProxyType(_build_similarity_thresholds())
+LLM_SETTINGS = MappingProxyType(_build_llm_settings())
+
+# The rest of the legacy constants remain unchanged below
 
 # Text processing limits
 TEXT_LIMITS = {
-    'toc_short': 50,          # TOC title length
-    'title_short': 60,        # Section title length
+    'toc_short': 70,          # TOC title length (increased for Japanese)
+    'title_short': 120,       # Section title length (doubled for Japanese)
     'title_min': 10,          # Minimum title length for validation
     'citation_max': 200,      # Citation translation max length
     'summary_point_max': 300, # Summary point max length
     'summary_point_min': 30,  # Summary point min length
-    'lead_title_max': 50,     # Lead text title max length
+    'lead_title_max': 80,     # Lead text title max length (increased for Japanese)
     'lead_body_max': 180,     # Lead text body max length
 }
 
@@ -25,16 +83,7 @@ PERFORMANCE = {
     'cache_max_size': 1000,         # Max articles in duplicate checker cache
 }
 
-# Similarity and matching thresholds
-SIMILARITY_THRESHOLDS = {
-    'duplicate_jaccard': 0.6,      # Jaccard similarity threshold
-    'duplicate_sequence': 0.65,    # Sequence similarity threshold
-    'duplicate_main': 0.75,        # Main duplicate threshold (temporarily lowered for better 🆙 detection)
-    'context_similarity': 0.55,    # Context analysis similarity (further lowered for 🆙 detection)
-    'enhanced_diff_threshold': 0.15, # Enhanced vs basic similarity difference
-    'ai_relevance_high': 0.75,     # High AI relevance threshold
-    'multi_source_detection': 0.75, # Multi-source topic detection (CRITICAL: raised from dangerous 0.52 to prevent unrelated article grouping)
-}
+# Legacy constants removed - all moved to config/settings.py with Pydantic validation
 
 # Content extraction and processing
 CONTENT_PROCESSING = {
@@ -44,22 +93,10 @@ CONTENT_PROCESSING = {
     'consolidation_threshold_adjustment': 0.25, # Threshold reduction for consolidation
 }
 
-# LLM operation settings
-LLM_SETTINGS = {
-    'retry_delay': 2.0,            # Retry delay in seconds
-    'max_retries': 3,              # Max retry attempts
-    'timeout_seconds': 30,         # LLM operation timeout
-    'summary_max_tokens': 250,     # Max tokens for summary generation
-    'title_max_tokens': 150,       # Max tokens for title generation
-    'citation_max_tokens': 200,    # Max tokens for citation generation
-    'temperature_conservative': 0.1, # Conservative temperature
-    'temperature_balanced': 0.2,   # Balanced temperature
-}
-
 # Newsletter generation settings
 NEWSLETTER = {
     'max_citations_per_article': 3, # Max citations per article
-    'target_article_count': 7,      # Target number of articles
+    'target_article_count': 10,     # Target number of articles (increased for more content)
     'max_articles_processing': 30,  # Max articles to process
     'lead_text_sentences': 3,       # Max sentences in lead text
 }
@@ -94,14 +131,7 @@ TIME_SETTINGS = {
     'cache_expiry_hours': 24,           # Cache expiry time
 }
 
-# LLM Configuration
-LLM_CONFIG = {
-    'primary_models': ['gemini-2.5-flash'],
-    'fallback_models': ['claude-3-7-sonnet-20250219', 'gpt-4o-mini'],
-    'max_retries': 3,
-    'retry_delay': 2,
-    'timeout': 60
-}
+# Legacy LLM_CONFIG removed - moved to config/settings.py LLMSettings
 
 # Embedding Settings
 EMBEDDING_SETTINGS = {

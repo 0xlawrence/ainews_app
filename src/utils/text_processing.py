@@ -8,8 +8,9 @@ the application for consistent text handling.
 import re
 from typing import List, Dict, Any
 
-from src.constants.settings import TEXT_LIMITS, QUALITY_CONTROLS
+from src.config.settings import get_settings
 from src.constants.messages import CLEANING_PATTERNS
+from src.constants.settings import QUALITY_CONTROLS
 
 
 def normalize_japanese_text(text: str) -> str:
@@ -59,6 +60,45 @@ def normalize_japanese_text(text: str) -> str:
     text = re.sub(r'\s+', ' ', text.strip())
     
     return text
+
+
+def remove_duplicate_patterns(title: str) -> str:
+    """
+    Remove duplicate patterns from titles like 'LLMの技術LLM' -> 'LLMの技術'.
+    
+    Args:
+        title: Input title text
+        
+    Returns:
+        Title with duplications removed
+    """
+    if not title:
+        return ""
+    
+    # Import duplicate patterns
+    duplicate_patterns = CLEANING_PATTERNS.get('duplicate_patterns', [])
+    
+    cleaned_title = title
+    for pattern in duplicate_patterns:
+        try:
+            # Apply the pattern with replacement that preserves the good part
+            if 'の' in pattern and '\\1' in pattern:
+                # For patterns like "(LLM)の([^のLLM]+)\\1", replace with "$1の$2"
+                cleaned_title = re.sub(pattern, r'\1の\2', cleaned_title)
+            elif 'で\\1' in pattern or 'が\\1' in pattern or 'を\\1' in pattern:
+                # For patterns like "(LLM|AI)で\\1", replace with just "$1"
+                cleaned_title = re.sub(pattern, r'\1', cleaned_title)
+            else:
+                # For other patterns, replace with the first group
+                cleaned_title = re.sub(pattern, r'\1\2', cleaned_title)
+        except Exception as e:
+            # If pattern fails, continue with next pattern
+            continue
+    
+    # Remove any resulting double spaces or punctuation
+    cleaned_title = re.sub(r'\s+', ' ', cleaned_title.strip())
+    
+    return cleaned_title
 
 
 def clean_llm_response(text: str) -> str:
@@ -215,30 +255,85 @@ def extract_japanese_sentences(text: str, min_length: int = 30, max_length: int 
 
 def ensure_sentence_completeness(text: str, target_length: int) -> str:
     """
-    Ensure text is complete sentences within target length.
+    🔥 ULTRA THINK: 自然言語境界保持切断（文意を壊さない切断）
     
     Args:
         text: Input text
         target_length: Target length
         
     Returns:
-        Text with complete sentences
+        Text with complete sentences preserving meaning
     """
     if len(text) <= target_length:
         return text
     
-    # Find last complete sentence within limit
-    sentences = re.split(r'[。、]', text)
-    if sentences:
+    # Phase 1: 完全な文単位での切断を試行（「。」で終わる文）
+    complete_sentences = re.split(r'(?<=。)', text)
+    if len(complete_sentences) > 1:
         result = ""
-        for sentence in sentences:
-            if len(result + sentence) < target_length - 5:  # Leave room for punctuation
-                result += sentence + "。"
+        for sentence in complete_sentences:
+            if len(result + sentence) <= target_length:
+                result += sentence
             else:
                 break
-        return result.rstrip("。。") + "。" if result else text[:target_length - 3] + "..."
+        if result and result.endswith('。'):
+            return result
     
-    return text[:target_length - 3] + "..."
+    # Phase 2: 自然な切断点を探索（文意を保持）
+    if len(text) > target_length:
+        # 自然な切断点の優先順位 (タイトル特化版)
+        natural_breaks = [
+            (r'。(?=[^」』])', 1),      # 文末の句点（引用外）
+            (r'、(?=\w{8,})', 1),      # 読点（後に8文字以上ある場合）
+            (r'(?<=です)(?=。)', 1),    # 「です」の後
+            (r'(?<=ます)(?=。)', 1),    # 「ます」の後
+            (r'(?<=ました)(?=。)', 1),  # 「ました」の後
+            (r'(?<=される)(?=。)', 1),  # 「される」の後
+            (r'(?<=\d)(?=％|%)', 2),   # 数字の後の％記号前で切断
+            (r'(?<=％|%)(?=[^」』])', 2), # ％記号の後で切断
+            (r'(?<=億|万|千|百)(?=ドル|円|人)', 2), # 単位の後で切断
+            (r'(?<=ドル|円|人)(?=[^」』])', 2), # 通貨単位の後で切断
+            (r'(?<=により)(?=[^」』])', 1), # 「により」の後
+            (r'(?<=として)(?=[^」』])', 1), # 「として」の後
+            (r'(?<=において)(?=[^」』])', 1), # 「において」の後
+            (r'(?<=[A-Z]{2,})(?=[^A-Z])', 3), # 英語略語の後で切断
+        ]
+        
+        best_cut_pos = -1
+        best_priority = 999
+        
+        # 優先度順に切断点を探索（数字の小さい方が高優先度）
+        for pattern, priority in natural_breaks:
+            matches = list(re.finditer(pattern, text[:target_length + 20]))
+            if matches and priority <= best_priority:
+                # 最も後ろの（文字数制限に近い）切断点を選択
+                for match in reversed(matches):
+                    if match.end() <= target_length - 3:  # 余裕を持たせる
+                        if priority < best_priority or match.end() > best_cut_pos:
+                            best_cut_pos = match.end()
+                            best_priority = priority
+                        break
+        
+        if best_cut_pos > 0:
+            cut_text = text[:best_cut_pos].strip()
+            # 適切な終端処理
+            if not cut_text.endswith(('。', '、', 'です', 'ます', 'した')):
+                cut_text += '。'
+            return cut_text
+    
+    # Phase 3: 最後の手段 - 単語境界での切断
+    if len(text) > target_length:
+        # 助詞・動詞語尾等の不適切な切断を避ける
+        bad_endings = ['の', 'が', 'を', 'に', 'で', 'と', 'は', 'も', 'し', 'て', 'れ', 'け']
+        safe_cut = target_length - 10
+        
+        while safe_cut > target_length // 2:
+            if text[safe_cut] in '、。' or not any(text[safe_cut-2:safe_cut].endswith(bad) for bad in bad_endings):
+                return text[:safe_cut] + '。'
+            safe_cut -= 1
+    
+    # Fallback: 元の動作
+    return text[:target_length - 3] + "…"
 
 
 def detect_language_ratio(text: str) -> Dict[str, float]:
