@@ -5,7 +5,7 @@ langchain-core==0.3.66
 langchain-community==0.3.26
 langchain-openai==0.3.25
 langchain-google-genai==2.1.5
-langchain-anthropic==0.2.4
+langchain-anthropic>=0.2.1,<0.2.3
 
 # Data models and validation
 pydantic==2.9.2
