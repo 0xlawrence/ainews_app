@@ -7,44 +7,57 @@ using text similarity algorithms without embeddings.
 
 import re
 from difflib import SequenceMatcher
+from typing import Union
 
 from src.config.settings import get_settings
 from src.constants.mappings import REPUTABLE_DOMAINS
-from src.constants.settings import CONTENT_PROCESSING, SIMILARITY_WEIGHTS
 from src.models.schemas import DuplicateCheckResult, SummarizedArticle
 from src.utils.logger import setup_logging
 from src.utils.text_processing import normalize_title_for_comparison
+from src.utils.memory_manager import get_memory_manager, track_memory_usage
 
 logger = setup_logging()
 
 
 class BasicDuplicateChecker:
-    """Enhanced duplicate checker with intelligent consolidation."""
+    """Enhanced duplicate checker with intelligent consolidation and memory management."""
 
     def __init__(
         self,
-        jaccard_threshold: float | None = None,
-        sequence_threshold: float | None = None,
-        consolidation_mode: bool = True    # Enable intelligent consolidation
+        jaccard_threshold: Union[float, None] = None,
+        sequence_threshold: Union[float, None] = None,
+        consolidation_mode: bool = True,    # Enable intelligent consolidation
+        max_cache_size: int = 1000          # Maximum articles to keep in cache
     ):
         """
-        Initialize duplicate checker.
+        Initialize duplicate checker with memory management.
 
         Args:
             jaccard_threshold: Minimum Jaccard similarity for duplicates
             sequence_threshold: Minimum sequence ratio for duplicates
             consolidation_mode: Enable intelligent consolidation instead of simple removal
+            max_cache_size: Maximum number of articles to keep in memory cache
         """
         self.settings = get_settings()
+        self.memory_manager = get_memory_manager()
         self.jaccard_threshold = jaccard_threshold or self.settings.embedding.duplicate_similarity_threshold
         self.sequence_threshold = sequence_threshold or self.settings.embedding.duplicate_similarity_threshold
         self.consolidation_mode = consolidation_mode
+        self.max_cache_size = max_cache_size
 
-        # Cache for processed articles (in-memory for Phase 1)
+        # Cache for processed articles (in-memory for Phase 1) with memory limits
         self.processed_articles: list[SummarizedArticle] = []
+        self._article_cache = {}  # Dictionary cache for faster lookups
+        self.memory_manager.track_cache_object(self._article_cache)
 
         # Duplicate groups for consolidation
         self.duplicate_groups: list[list[SummarizedArticle]] = []
+        
+        # Register for cleanup
+        self.memory_manager.track_large_object(self)
+        self.memory_manager.add_cleanup_callback(self.cleanup_resources)
+        
+        logger.info(f"BasicDuplicateChecker initialized with memory management (max_cache_size: {max_cache_size})")
 
         # 🔥 ULTRA THINK: イベント単位重複検出の強化
         self.event_based_keywords = {
@@ -71,6 +84,7 @@ class BasicDuplicateChecker:
             },
         }
 
+    @track_memory_usage("check_duplicate")
     def check_duplicate(
         self,
         current_article: SummarizedArticle,
@@ -344,7 +358,7 @@ class BasicDuplicateChecker:
             content_similarity = max(content_jaccard, content_sequence)
 
             # 3. Content excerpt similarity (for detailed content comparison)
-            excerpt_length = CONTENT_PROCESSING['excerpt_length']
+            excerpt_length = self.settings.processing.excerpt_length
             content1_excerpt = article1.filtered_article.raw_article.content[:excerpt_length]
             content2_excerpt = article2.filtered_article.raw_article.content[:excerpt_length]
             excerpt_sequence = self._calculate_sequence_similarity(content1_excerpt, content2_excerpt)
@@ -368,13 +382,13 @@ class BasicDuplicateChecker:
                     d1_reputable = any(domain in d1 for domain in REPUTABLE_DOMAINS)
                     d2_reputable = any(domain in d2 for domain in REPUTABLE_DOMAINS)
                     if d1_reputable and d2_reputable:
-                        source_bonus = SIMILARITY_WEIGHTS['source_bonus'] * 2  # Double bonus for cross-source coverage
+                        source_bonus = self.settings.processing.source_bonus_weight * 2  # Double bonus for cross-source coverage
 
             # 5. Weighted combination using configuration
             final_similarity = (
-                title_similarity * SIMILARITY_WEIGHTS['title'] +
-                content_similarity * SIMILARITY_WEIGHTS['content'] +
-                excerpt_sequence * SIMILARITY_WEIGHTS['excerpt'] +
+                title_similarity * self.settings.processing.title_weight +
+                content_similarity * self.settings.processing.content_weight +
+                excerpt_sequence * self.settings.processing.excerpt_weight +
                 source_bonus
             )
 
@@ -685,7 +699,7 @@ class BasicDuplicateChecker:
         self,
         current_article: SummarizedArticle,
         past_articles: list[SummarizedArticle]
-    ) -> dict | None:
+    ) -> Union[dict, None]:
         """🔥 ULTRA THINK: イベント単位重複検出（同一イベントの多面的報道を統合）"""
 
         current_title = current_article.filtered_article.raw_article.title.lower()
@@ -727,7 +741,7 @@ class BasicDuplicateChecker:
 
         return None
 
-    def _check_topic_duplicate(self, current_article: SummarizedArticle, past_articles: list[SummarizedArticle]) -> SummarizedArticle | None:
+    def _check_topic_duplicate(self, current_article: SummarizedArticle, past_articles: list[SummarizedArticle]) -> Union[SummarizedArticle, None]:
         """DEPRECATED: Use _check_event_based_duplicate instead."""
         logger.warning("Using deprecated _check_topic_duplicate. Use _check_event_based_duplicate instead.")
 
@@ -816,7 +830,7 @@ class BasicDuplicateChecker:
                     logger.debug(f"Related article pattern detected: {pattern_info}")
                     return "related"
 
-            # Phase 4: 同一企業・組織の異なるニュース（関連記事として保持）
+            # Phase 4: 同一企業・組織の異なるニュース判定の改善
             company_entities = [
                 ['openai', 'chatgpt', 'altman'],
                 ['sakana', 'sakana ai'],
@@ -832,9 +846,39 @@ class BasicDuplicateChecker:
                 has_past = any(entity in past_text for entity in entities)
 
                 if has_current and has_past:
-                    # 同一企業の異なる側面のニュース = 関連記事
-                    logger.debug(f"Same company related articles: {entities}")
-                    return "related"
+                    # CRITICAL FIX: Check if they're about the same specific topic
+                    # If they share specific business metrics or announcements, they're likely duplicates
+                    business_duplicate_indicators = [
+                        # Financial metrics
+                        ['valuation', 'billion', 'revenue', 'funding', 'investment'],
+                        ['評価額', '億ドル', '売上', '資金調達', '投資'],
+                        # Product announcements
+                        ['launch', 'release', 'announce', 'unveil', 'introduce'],
+                        ['発表', 'リリース', '公開', '発売', '導入'],
+                        # Business metrics
+                        ['download', 'user', 'growth', 'market', 'customer'],
+                        ['ダウンロード', 'ユーザー', '成長', '市場', '顧客'],
+                        # Specific business terms
+                        ['ceo', 'executive', 'leadership', 'management', 'strategy'],
+                        ['ceo', '経営', 'リーダーシップ', '戦略', '方針']
+                    ]
+                    
+                    # Count how many business indicators are shared
+                    shared_indicators = 0
+                    for indicator_set in business_duplicate_indicators:
+                        has_current_indicator = any(indicator in current_text for indicator in indicator_set)
+                        has_past_indicator = any(indicator in past_text for indicator in indicator_set)
+                        if has_current_indicator and has_past_indicator:
+                            shared_indicators += 1
+                    
+                    # If they share multiple business indicators, they're likely duplicates
+                    if shared_indicators >= 2 and basic_similarity > 0.60:
+                        logger.debug(f"Same company business duplicate detected: {entities}, shared indicators: {shared_indicators}")
+                        return "duplicate"
+                    else:
+                        # Different aspects of the same company = related
+                        logger.debug(f"Same company related articles: {entities}")
+                        return "related"
 
         # Phase 5: 中程度類似度での重複判定（従来より厳格化）
         if basic_similarity > 0.80:  # 0.75→0.80に厳格化
@@ -844,6 +888,57 @@ class BasicDuplicateChecker:
         # Phase 6: デフォルト（無関係）
         logger.debug(f"Unrelated articles: {basic_similarity:.3f}")
         return "unrelated"
+    
+    def cleanup_resources(self):
+        """Clean up all resources to prevent memory leaks."""
+        logger.info("Cleaning up BasicDuplicateChecker resources")
+        
+        # Clear processed articles cache with size limit
+        if hasattr(self, 'processed_articles'):
+            original_size = len(self.processed_articles)
+            if original_size > self.max_cache_size:
+                # Keep only the most recent articles
+                self.processed_articles = self.processed_articles[-self.max_cache_size:]
+                logger.info(f"Truncated processed articles cache: {original_size} → {len(self.processed_articles)}")
+            else:
+                self.processed_articles.clear()
+                logger.info(f"Cleared {original_size} processed articles from cache")
+        
+        # Clear article cache
+        if hasattr(self, '_article_cache'):
+            cache_size = len(self._article_cache)
+            self._article_cache.clear()
+            if cache_size > 0:
+                logger.info(f"Cleared {cache_size} article cache entries")
+        
+        # Clear duplicate groups
+        if hasattr(self, 'duplicate_groups'):
+            groups_count = len(self.duplicate_groups)
+            self.duplicate_groups.clear()
+            if groups_count > 0:
+                logger.info(f"Cleared {groups_count} duplicate groups")
+    
+    def get_memory_usage_stats(self) -> dict:
+        """Get detailed memory usage statistics."""
+        stats = {
+            "processed_articles_count": len(self.processed_articles) if hasattr(self, 'processed_articles') else 0,
+            "article_cache_size": len(self._article_cache) if hasattr(self, '_article_cache') else 0,
+            "duplicate_groups_count": len(self.duplicate_groups) if hasattr(self, 'duplicate_groups') else 0,
+            "max_cache_size": self.max_cache_size,
+            "cache_usage_percent": 0
+        }
+        
+        if hasattr(self, 'processed_articles') and self.max_cache_size > 0:
+            stats["cache_usage_percent"] = (len(self.processed_articles) / self.max_cache_size) * 100
+        
+        return stats
+    
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        try:
+            self.cleanup_resources()
+        except Exception:
+            pass  # Ignore errors in destructor
 
 
 def check_article_duplicates(
@@ -875,7 +970,7 @@ def consolidate_similar_articles(
     sequence_threshold: float = 0.55,  # Lowered from 0.60 to prevent over-filtering
     consolidation_mode: bool = True,
     *,
-    similarity_threshold: float | None = None  # 新規オプション (both metricsに適用)
+    similarity_threshold: Union[float, None] = None  # 新規オプション (both metricsに適用)
 ) -> list[SummarizedArticle]:
     """
     Convenience function for intelligent duplicate consolidation.

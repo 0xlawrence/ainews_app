@@ -6,9 +6,11 @@ the application for consistent text handling.
 """
 
 import re
+import unicodedata
+from typing import Union, List, Optional
 
 from src.constants.messages import CLEANING_PATTERNS
-from src.constants.settings import QUALITY_CONTROLS
+from src.config.settings import get_settings
 
 
 def normalize_japanese_text(text: str) -> str:
@@ -24,12 +26,17 @@ def normalize_japanese_text(text: str) -> str:
     if not text:
         return ""
 
+    # CRITICAL FIX: Remove inappropriate period insertions before other processing
+    text = fix_inappropriate_period_insertions(text)
+    
     # Remove redundant expressions
     redundant_patterns = [
-        (r'ことができます。.*?ことができます。', 'ことができます。'),
+        # 連続出現の2回目以降を削除（最初の1回は保持）
+        (r'ことができます。(\s*ことができます。)+', 'ことができます。'),
         (r'ことになります。.*?ことになります。', 'ことになります。'),
         (r'と思われます。.*?と思われます。', 'と思われます。'),
-        (r'することが可能です。.*?することが可能です。', 'することが可能です。'),
+        # Make this less aggressive to keep first occurrence intact
+        (r'(することが可能です。)(?:.*?することが可能です。)+', r'\1'),
         (r'に関しては、', 'については、'),
         (r'について述べると、', 'については、'),
         (r'という形で', ''),
@@ -56,6 +63,26 @@ def normalize_japanese_text(text: str) -> str:
     # Clean up multiple periods and whitespace
     text = re.sub(r'。+', '。', text)
     text = re.sub(r'\s+', ' ', text.strip())
+
+    # Ensure exactly one occurrence of "ことができます。"
+    try:
+        occurrences = list(re.finditer(r'ことができます。', text))
+        if len(occurrences) >= 2:
+            # Keep the first occurrence intact; replace the rest with a shorter form
+            # Replace from second onward
+            def _replace_after_first(m_iter, s: str) -> str:
+                first_end = occurrences[0].end()
+                prefix = s[:first_end]
+                suffix = s[first_end:]
+                suffix = re.sub(r'ことができます。', 'できます。', suffix)
+                return prefix + suffix
+            text = _replace_after_first(occurrences, text)
+
+        # If phrase was altered elsewhere (e.g., "ことできます。"), restore the first to desired form
+        if re.search(r'ことできます。', text) and 'ことができます。' not in text:
+            text = re.sub(r'ことできます。', 'ことができます。', text, count=1)
+    except Exception:
+        pass
 
     return text
 
@@ -84,7 +111,7 @@ def remove_duplicate_patterns(title: str) -> str:
                 # For patterns like "(LLM)の([^のLLM]+)\\1", replace with "$1の$2"
                 cleaned_title = re.sub(pattern, r'\1の\2', cleaned_title)
             elif 'で\\1' in pattern or 'が\\1' in pattern or 'を\\1' in pattern:
-                # For patterns like "(LLM|AI)で\\1", replace with just "$1"
+                # For patterns like "(Union[LLM, AI])で\\1", replace with just "$1"
                 cleaned_title = re.sub(pattern, r'\1', cleaned_title)
             else:
                 # For other patterns, replace with the first group
@@ -100,73 +127,32 @@ def remove_duplicate_patterns(title: str) -> str:
 
 
 def clean_llm_response(text: str) -> str:
-    """
-    Clean LLM response to extract only the relevant content.
-
-    Args:
-        text: Raw LLM response text
-
-    Returns:
-        Cleaned text content
-    """
+    """Clean and normalize LLM response text."""
     if not text:
         return ""
-
+    
+    # Remove common LLM artifacts
+    text = re.sub(r'^```(?:json|markdown)?\s*', '', text)
+    text = re.sub(r'\s*```$', '', text)
+    # Remove enclosing Japanese quotes if the whole text is wrapped
+    text = re.sub(r'^「(.+?)」$', r'\1', text)
+    
+    # Remove common meta preambles and labels
+    text = re.sub(r'^(?:以下が要約です|要約|Summary|概要)[：:]?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^(?:翻訳|Japanese\s+translation)[：:]?\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'^(?:\d+\.|[-\*•・])\s*', '', text)
+    
+    # Remove leading colon if present after cleaning
+    text = re.sub(r'^[:：]\s*', '', text)
+    
+    # Remove specific trailing templates (keep core noun phrase)
+    text = re.sub(r'に関して重要な報告をしています。?$', '', text)
+    
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text)
     text = text.strip()
-
-    # Handle multi-line responses intelligently
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if not lines:
-        return ""
-
-    # Apply meta-pattern removal
-    best_line = ""
-    for line in lines[:3]:  # Check first 3 lines only
-        cleaned_line = line
-
-        # Apply meta-patterns to this line
-        for pattern in CLEANING_PATTERNS['meta_removal']:
-            cleaned_line = re.sub(pattern, r'\1' if r'\1' in pattern else '', cleaned_line, flags=re.IGNORECASE)
-
-        cleaned_line = cleaned_line.strip()
-
-        # Skip if line is primarily English meta-text
-        if re.search(r'^[A-Za-z\s\.\,\:\!\?]+$', cleaned_line):
-            continue
-
-        # Skip common Japanese meta-responses
-        if re.search(r'^(はい|承知|以下|要約|翻訳|作成)', cleaned_line) and not re.search(r'(発表|技術|投資|企業|サービス)', cleaned_line):
-            continue
-
-        # Check for Japanese content that seems like actual content
-        if re.search(QUALITY_CONTROLS['japanese_char_patterns'], cleaned_line) and len(cleaned_line) > 10:
-            best_line = cleaned_line
-            break
-
-    # Fallback to first line if no Japanese found
-    if not best_line and lines:
-        best_line = lines[0]
-        # Apply meta-patterns to fallback
-        for pattern in CLEANING_PATTERNS['meta_removal']:
-            best_line = re.sub(pattern, r'\1' if r'\1' in pattern else '', best_line, flags=re.IGNORECASE)
-
-    text = best_line.strip()
-
-    # Remove only paired quote marks at start and end
-    text = re.sub(r'^[「『"](.*?)[」』"]$', r'\1', text)
-
-    # Remove trailing template phrases
-    template_phrases = [
-        r'という.*?があります。?$',
-        r'について.*?です。?$',
-        r'に関する.*?記事$',
-        r'の詳細.*?$',
-    ]
-
-    for phrase in template_phrases:
-        text = re.sub(phrase, '', text)
-
-    return text.strip()
+    
+    return text
 
 
 def normalize_title_for_comparison(title: str) -> str:
@@ -222,6 +208,70 @@ def truncate_at_sentence_boundary(text: str, max_length: int, placeholder: str =
     # Fallback to simple truncation
     return text[:max_length - len(placeholder)] + placeholder
 
+
+def intelligent_truncate(text: str, max_chars: int = 70) -> str:
+    """
+    Intelligently truncate Japanese text at natural breaking points suitable for
+    titles/TOC, avoiding unnatural endings (particles, trailing comma).
+
+    - Prefer sentence boundaries and punctuation within range
+    - Avoid ending with hanging particles like 'は', 'が', 'を', 'に', 'で', 'と'
+    - Avoid ending with '、' and roll back to a safer position
+
+    Args:
+        text: Input text to truncate
+        max_chars: Maximum allowed characters
+
+    Returns:
+        Truncated text with natural ending
+    """
+    if not text or len(text) <= max_chars:
+        return text
+
+    # Expand window slightly to search for better natural breakpoints
+    window = text[: max_chars + 20]
+
+    # Candidate breakpoints ordered by preference
+    breakpoint_patterns: list[tuple[str, bool]] = [
+        # pattern, include_match
+        (r'。', True),                 # sentence end
+        (r'」', True),                 # closing quote
+        (r'）', True),                 # closing paren
+        (r'、', True),                 # comma (less preferred)
+    ]
+
+    best_cut = -1
+    for pattern, include in breakpoint_patterns:
+        matches = list(re.finditer(pattern, window))
+        # Choose the last breakpoint that is <= max_chars
+        for m in reversed(matches):
+            cut_pos = m.end() if include else m.start()
+            if cut_pos <= max_chars:
+                best_cut = cut_pos
+                break
+        if best_cut != -1:
+            break
+
+    # If no good breakpoint, hard cut with ellipsis
+    result = window[:max_chars]
+    if best_cut != -1:
+        result = window[:best_cut]
+
+    result = result.rstrip()
+
+    # Roll back if ends with undesirable particles or comma
+    bad_endings = ('は', 'が', 'を', 'に', 'で', 'と', '、')
+    if result.endswith(bad_endings):
+        # Remove the final character and trim
+        result = result[:-1].rstrip()
+
+    # Ensure we end nicely; add ellipsis if we cut mid-sentence without punctuation
+    if not result.endswith(('。', '」', '）')):
+        # Add ellipsis only when there is remaining content beyond the cut
+        if len(text) > len(result):
+            result += '…'
+
+    return result
 
 def extract_japanese_sentences(text: str, min_length: int = 30, max_length: int = 300) -> list[str]:
     """
@@ -283,18 +333,18 @@ def ensure_sentence_completeness(text: str, target_length: int) -> str:
         natural_breaks = [
             (r'。(?=[^」』])', 1),      # 文末の句点（引用外）
             (r'、(?=\w{8,})', 1),      # 読点（後に8文字以上ある場合）
-            (r'(?<=です)(?=。)', 1),    # 「です」の後
-            (r'(?<=ます)(?=。)', 1),    # 「ます」の後
-            (r'(?<=ました)(?=。)', 1),  # 「ました」の後
-            (r'(?<=される)(?=。)', 1),  # 「される」の後
-            (r'(?<=\d)(?=％|%)', 2),   # 数字の後の％記号前で切断
-            (r'(?<=％|%)(?=[^」』])', 2), # ％記号の後で切断
-            (r'(?<=億|万|千|百)(?=ドル|円|人)', 2), # 単位の後で切断
-            (r'(?<=ドル|円|人)(?=[^」』])', 2), # 通貨単位の後で切断
-            (r'(?<=により)(?=[^」』])', 1), # 「により」の後
-            (r'(?<=として)(?=[^」』])', 1), # 「として」の後
-            (r'(?<=において)(?=[^」』])', 1), # 「において」の後
-            (r'(?<=[A-Z]{2,})(?=[^A-Z])', 3), # 英語略語の後で切断
+            (r'(です)(?=。)', 1),       # 「です」の後（後読み回避）
+            (r'(ます)(?=。)', 1),       # 「ます」の後
+            (r'(ました)(?=。)', 1),     # 「ました」の後
+            (r'(される)(?=。)', 1),     # 「される」の後
+            (r'(?<=\d)(?=％|%)', 2),   # 数字の後の％記号前で切断（固定幅LB）
+            (r'(?<=％|%)(?=[^」』])', 2), # ％記号の後で切断（固定幅LB）
+            (r'(億|万|千|百)(?=(?:ドル|円)|人)', 2), # 単位の後で切断（前方一致）
+            (r'((?:ドル|円)|人)(?=[^」』])', 2),     # 通貨・人の直後（後読み回避）
+            (r'(により)(?=[^」』])', 1), # 「により」の後
+            (r'(として)(?=[^」』])', 1), # 「として」の後
+            (r'(において)(?=[^」』])', 1), # 「において」の後
+            (r'([A-Z]{2,})(?=[^A-Z])', 3), # 英語略語の直後で切断
         ]
 
         best_cut_pos = -1
@@ -306,9 +356,11 @@ def ensure_sentence_completeness(text: str, target_length: int) -> str:
             if matches and priority <= best_priority:
                 # 最も後ろの（文字数制限に近い）切断点を選択
                 for match in reversed(matches):
-                    if match.end() <= target_length - 3:  # 余裕を持たせる
+                    # グループ1がある場合はその末尾で切断（後読み回避パターン対応）
+                    cut_end = match.end(1) if (match.lastindex and match.lastindex >= 1) else match.end()
+                    if cut_end <= target_length - 3:  # 余裕を持たせる
                         if priority < best_priority or match.end() > best_cut_pos:
-                            best_cut_pos = match.end()
+                            best_cut_pos = cut_end
                             best_priority = priority
                         break
 
@@ -334,6 +386,228 @@ def ensure_sentence_completeness(text: str, target_length: int) -> str:
     return text[:target_length - 3] + "…"
 
 
+def fix_inappropriate_period_insertions(text: str) -> str:
+    """
+    Fix inappropriate period insertions in Japanese text.
+    
+    This function addresses the critical issue where periods are being inserted
+    in inappropriate locations like "1000。億ドル" or "Claude Code。の".
+    
+    Args:
+        text: Input Japanese text with potential period insertion issues
+        
+    Returns:
+        Text with period insertions fixed
+    """
+    if not text:
+        return text
+        
+    # Pattern 1: Numbers followed by periods before units
+    # Fix: "1000。億ドル" -> "1000億ドル"
+    text = re.sub(r'(\d+)。(億|万|千|百|十)(ドル|円|人|台|件|社|年|月|日)', r'\1\2\3', text)
+    
+    # Pattern 2: Product/company names with periods before particles
+    # Fix: "Claude Code。の" -> "Claude Codeの"
+    text = re.sub(r'([A-Za-z]+[A-Za-z0-9]*|[\u30A0-\u30FF\u4E00-\u9FAF]+)。([のがをにでとは])', r'\1\2', text)
+    
+    # Pattern 3: Words followed by periods before continuation
+    # Fix: "ダッシュボー。ド" -> "ダッシュボード"
+    text = re.sub(r'([\u30A0-\u30FF\u4E00-\u9FAF]+)。([\u30A0-\u30FF\u4E00-\u9FAF]+)', r'\1\2', text)
+    
+    # Pattern 4: Decimal numbers with periods
+    # Fix: "5.5。倍" -> "5.5倍"
+    text = re.sub(r'(\d+\.\d+)。(倍|%|％)', r'\1\2', text)
+    
+    # Pattern 5: Periods followed by comma (incorrect punctuation)
+    # Fix: "なり、。創作" -> "なり、創作"
+    text = re.sub(r'、。', '、', text)
+    
+    # Pattern 6: Fix duplicate particle issues
+    # Fix: "2025年にが" -> "2025年に"
+    text = re.sub(r'(に|を|が|は|で|と|から)(が|は|を|に|で|と|から)', r'\1', text)
+    
+    # Pattern 7: Fix incomplete verb forms
+    # Fix: "生み出しておりが" -> "生み出しており"
+    text = re.sub(r'(ており|ており)が', r'\1', text)
+    
+    return text
+
+
+def fix_particle_duplication(text: str) -> str:
+    """
+    Fix particle duplication issues in Japanese text.
+    
+    Args:
+        text: Input Japanese text with potential particle duplication
+        
+    Returns:
+        Text with particle duplication fixed
+    """
+    if not text:
+        return text
+        
+    # Common particle duplication patterns
+    particle_patterns = [
+        (r'にが', 'に'),
+        (r'をが', 'を'),
+        (r'でが', 'で'),
+        (r'とが', 'と'),
+        (r'からが', 'から'),
+        (r'ておりが', 'ており'),
+        (r'ているが', 'ている'),
+        (r'ましたが', 'ました'),
+        (r'ですが', 'です'),
+        (r'、は([^、。]*)', r'、\1'),  # Fix "、は動画" → "、動画"
+        (r'この新機能が([^。]*)', r'この新機能は\1'),  # Fix "この新機能が" → "この新機能は" 
+    ]
+    
+    for pattern, replacement in particle_patterns:
+        text = re.sub(pattern, replacement, text)
+        
+    return text
+
+
+def normalize_unicode_content(text: str) -> str:
+    """Normalize Unicode content to prevent encoding issues."""
+    if not text:
+        return text
+    
+    try:
+        # Normalize to NFC form
+        normalized = unicodedata.normalize('NFC', text)
+        
+        # Handle surrogate pairs and invalid characters
+        cleaned = ''
+        i = 0
+        while i < len(normalized):
+            char = normalized[i]
+            category = unicodedata.category(char)
+            
+            # Skip surrogate characters
+            if category == 'Cs':
+                i += 1
+                continue
+            
+            # Replace control characters (except newlines and tabs)
+            if category == 'Cc' and char not in '\n\t\r':
+                cleaned += ' '
+                i += 1
+                continue
+            
+            cleaned += char
+            i += 1
+        
+        return cleaned
+    except Exception:
+        # Fallback: return original text if normalization fails
+        return text
+
+
+def safe_encode_for_api(text: str) -> bytes:
+    """Safely encode text for API transmission."""
+    if not text:
+        return b''
+    
+    # Normalize Unicode first
+    normalized = normalize_unicode_content(text)
+    
+    # Encode with error handling
+    try:
+        return normalized.encode('utf-8', errors='replace')
+    except Exception:
+        # Fallback: encode as ASCII with replacement
+        return normalized.encode('ascii', errors='replace')
+
+
+def clean_emoji_and_special_chars(text: str) -> str:
+    """Clean emoji and special characters that might cause encoding issues."""
+    if not text:
+        return text
+    
+    # Keep common emoji that are safe
+    safe_emoji = ['🆙', '✅', '🚨', '⚠️', '📝', '🤖', '💡', '🔧', '📊', '🎯']
+    
+    cleaned = ''
+    for char in text:
+        # Keep safe emoji
+        if char in safe_emoji:
+            cleaned += char
+            continue
+        
+        # Keep basic punctuation and alphanumeric
+        if char.isalnum() or char in ' .,!?;:()[]{}"\'-_':
+            cleaned += char
+            continue
+        
+        # Check if it's a safe Unicode character
+        try:
+            category = unicodedata.category(char)
+            # Keep letters, numbers, punctuation, symbols, and marks
+            if category.startswith(('L', 'N', 'P', 'S', 'M')):
+                # Additional check for surrogate pairs
+                if not (0xD800 <= ord(char) <= 0xDFFF):
+                    cleaned += char
+            else:
+                # Replace other characters with space
+                cleaned += ' '
+        except Exception:
+            # If we can't determine the category, replace with space
+            cleaned += ' '
+    
+    return cleaned
+
+
+def validate_text_for_api(text: str) -> tuple[bool, str]:
+    """Validate text for API transmission and return (is_valid, error_message)."""
+    if not text:
+        return True, ""
+    
+    try:
+        # Try to encode the text
+        encoded = text.encode('utf-8')
+        
+        # Check for surrogate pairs
+        for i, char in enumerate(text):
+            if 0xD800 <= ord(char) <= 0xDFFF:
+                return False, f"Surrogate pair found at position {i}"
+        
+        return True, ""
+    except UnicodeEncodeError as e:
+        return False, f"Unicode encoding error: {e}"
+    except Exception as e:
+        return False, f"Validation error: {e}"
+
+
+def apply_quality_controls(text: str) -> str:
+    """Apply quality control rules to text."""
+    if not text:
+        return text
+    
+    # Apply all text processing functions
+    text = clean_llm_response(text)
+    text = fix_inappropriate_period_insertions(text)
+    text = fix_particle_duplication(text)
+    text = normalize_unicode_content(text)
+    
+    return text
+
+
+def extract_safe_text_for_api(text: str, max_length: Optional[int] = None) -> str:
+    """Extract safe text for API transmission with optional length limit."""
+    if not text:
+        return ""
+    
+    # Apply all cleaning functions
+    cleaned = apply_quality_controls(text)
+    cleaned = clean_emoji_and_special_chars(cleaned)
+    
+    # Apply length limit if specified
+    if max_length and len(cleaned) > max_length:
+        cleaned = cleaned[:max_length-3] + "..."
+    
+    return cleaned
+
+
 def detect_language_ratio(text: str) -> dict[str, float]:
     """
     Detect the ratio of Japanese vs other characters in text.
@@ -344,7 +618,8 @@ def detect_language_ratio(text: str) -> dict[str, float]:
     Returns:
         Dictionary with language ratios
     """
-    japanese_chars = re.findall(QUALITY_CONTROLS['japanese_char_patterns'], text)
+    settings = get_settings()
+    japanese_chars = re.findall(settings.processing.japanese_char_pattern, text)
     english_chars = re.findall(r'[a-zA-Z]', text)
     total_chars = len(re.findall(r'[a-zA-Z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', text))
 

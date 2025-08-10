@@ -11,7 +11,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Union
 
 try:
     from langsmith import Client as LangSmithClient
@@ -31,22 +31,22 @@ logger = setup_logging()
 class TraceEvent:
     """Represents a trace event."""
     event_id: str
-    parent_id: str | None
+    parent_id: Union[str, None]
     run_id: str
     event_type: str
     timestamp: datetime
-    duration_ms: float | None
-    operation: str | None = None  # Operation name for this trace event
+    duration_ms: Union[float, None]
+    operation: Union[str, None] = None  # Operation name for this trace event
 
     # LLM specific
-    prompt: str | None = None
-    response: str | None = None
-    model: str | None = None
-    provider: str | None = None
+    prompt: Union[str, None] = None
+    response: Union[str, None] = None
+    model: Union[str, None] = None
+    provider: Union[str, None] = None
     tokens_used: dict[str, int] | None = None
 
     # Quality metrics
-    quality_score: float | None = None
+    quality_score: Union[float, None] = None
     validation_errors: list[str] = None
 
     # Context

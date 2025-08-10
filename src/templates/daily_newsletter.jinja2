@@ -1,7 +1,7 @@
 # {{ date.strftime('%Y年%m月%d日') }} AI NEWS TLDR
 
 {% if lead_text %}
-## {{ lead_text.title }}
+**{{ lead_text.title }}**
 
 {% for paragraph in lead_text.paragraphs %}
 {{ paragraph }}
@@ -50,8 +50,8 @@
 {% if article.citations %}
 {% for citation in article.citations %}
 {%- if citation and citation.source_name and citation.url %}
-> **{{ citation.source_name }}** ({{ citation.url }}): {{ citation.title }}
 > {{ citation.japanese_summary or 'AI関連記事の詳細情報' }}
+> 出典: {{ citation.source_name }} ({{ citation.url }})
 {%- endif %}
 {%- endfor %}
 {% endif %}

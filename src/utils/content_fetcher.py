@@ -10,6 +10,7 @@ import os
 import re
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
+from typing import Union
 
 import aiohttp
 import feedparser
@@ -36,7 +37,7 @@ class ContentFetcher:
         """
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.max_concurrent = max_concurrent
-        self.session: aiohttp.ClientSession | None = None
+        self.session: aiohttp.Union[ClientSession, None] = None
 
         # User agent to avoid being blocked
         self.headers = {
@@ -277,7 +278,7 @@ class ContentFetcher:
         entry: feedparser.FeedParserDict,
         source: SourceConfig,
         cutoff_time: datetime
-    ) -> RawArticle | None:
+    ) -> Union[RawArticle, None]:
         """Parse a single RSS entry into a RawArticle."""
 
         # Extract basic fields

@@ -23,7 +23,10 @@ logs/
 .coverage
 htmlcov/
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
 tests/test_*_with_secrets.py
+tests/*.log
 
 # Build artifacts
 build/

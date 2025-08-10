@@ -10,6 +10,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
+from typing import Union
 
 # HTTP requests
 try:
@@ -85,8 +86,8 @@ class ImageFetcher:
     def get_image_from_url(
         self,
         url: str,
-        article_id: str | None = None
-    ) -> Path | None:
+        article_id: Union[str, None] = None
+    ) -> Union[Path, None]:
         """
         Get the best image for a given URL.
 
@@ -144,27 +145,20 @@ class ImageFetcher:
 
         return any(re.search(pattern, url, re.IGNORECASE) for pattern in youtube_patterns)
 
-    def _extract_youtube_video_id(self, url: str) -> str | None:
+    def _extract_youtube_video_id(self, url: str) -> Union[str, None]:
         """Extract YouTube video ID from various URL formats."""
-        patterns = [
-            r'youtube\.com/watch\?v=([^&]+)',
-            r'youtu\.be/([^?]+)',
-            r'youtube\.com/embed/([^?]+)',
-            r'youtube\.com/v/([^?]+)',
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, url, re.IGNORECASE)
-            if match:
-                return match.group(1)
-
-        return None
+        try:
+            # Reuse shared validator for consistency with citation URL checks
+            from src.utils.url_validation import extract_youtube_video_id as _extract
+            return _extract(url)
+        except Exception:
+            return None
 
     def _get_youtube_thumbnail(
         self,
         url: str,
-        article_id: str | None = None
-    ) -> Path | None:
+        article_id: Union[str, None] = None
+    ) -> Union[Path, None]:
         """
         Get YouTube video thumbnail.
 
@@ -222,8 +216,8 @@ class ImageFetcher:
     def _get_ogp_image(
         self,
         url: str,
-        article_id: str | None = None
-    ) -> Path | None:
+        article_id: Union[str, None] = None
+    ) -> Union[Path, None]:
         """Extract and download OGP (Open Graph Protocol) image from URL."""
         try:
             # Fetch the webpage
@@ -273,8 +267,8 @@ class ImageFetcher:
     def _get_first_image_from_page(
         self,
         url: str,
-        article_id: str | None = None
-    ) -> Path | None:
+        article_id: Union[str, None] = None
+    ) -> Union[Path, None]:
         """Find and download the first suitable image from the webpage."""
         try:
             # Fetch the webpage
@@ -363,6 +357,7 @@ class ImageFetcher:
             r'pixel',
             r'1x1',
             r'spacer',
+            r'ad[-_]?banner',
         ]
 
         src_lower = src.lower()
@@ -403,8 +398,8 @@ class ImageFetcher:
         self,
         image_url: str,
         filename_prefix: str,
-        article_id: str | None = None
-    ) -> Path | None:
+        article_id: Union[str, None] = None
+    ) -> Union[Path, None]:
         """Download an image from URL to temporary file."""
         try:
             logger.debug(f"Downloading image: {image_url}")
@@ -453,8 +448,8 @@ class ImageFetcher:
         self,
         content: bytes,
         filename_prefix: str,
-        article_id: str | None = None
-    ) -> Path | None:
+        article_id: Union[str, None] = None
+    ) -> Union[Path, None]:
         """Save content to a temporary file."""
         try:
             # Create filename
@@ -532,7 +527,7 @@ class ImageFetcher:
 
 
 # Convenience functions
-def get_image_for_article(url: str, article_id: str | None = None) -> Path | None:
+def get_image_for_article(url: str, article_id: Union[str, None] = None) -> Union[Path, None]:
     """
     Convenience function to get the best image for an article URL.
 

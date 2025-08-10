@@ -7,6 +7,7 @@ articles are duplicates, updates, or independent content.
 
 import json
 from pathlib import Path
+from typing import Union
 
 import yaml
 
@@ -23,8 +24,8 @@ class ContextAnalyzer:
 
     def __init__(
         self,
-        embedding_manager: EmbeddingManager | None = None,
-        llm_router: LLMRouter | None = None,
+        embedding_manager: Union[EmbeddingManager, None] = None,
+        llm_router: Union[LLMRouter, None] = None,
         prompts_dir: str = "src/prompts"
     ):
         """
@@ -76,7 +77,7 @@ class ContextAnalyzer:
             - KEEP: 独立記事
 
             JSON形式で回答:
-            {{"decision": "SKIP|UPDATE|KEEP", "reasoning": "理由", "confidence_score": 0.85}}
+            {"decision": "SKIP|UPDATE|KEEP", "reasoning": "理由", "confidence_score": 0.85}
             """,
             "system_prompt": "あなたはAIニュース記事の文脈分析専門家です。"
         }
@@ -354,11 +355,11 @@ class ContextAnalyzer:
                 # F-16 UPDATE detection reconstruction - improved thresholds for reliable 🆙 emoji assignment
                 max_similarity = similar_articles[0]["similarity_score"] if similar_articles else 0.0
 
-                # CRITICAL: Even stricter thresholds to prevent 🆙 emoji overuse
-                if max_similarity > 0.998:  # 99.8%+ similarity = SKIP (virtually identical)
+                # 現実的な閾値に調整（TODO_plan 準拠）
+                if max_similarity > 0.98:  # 98%+ similarity = SKIP (virtually identical)
                     decision = "SKIP"
                     reasoning = f"極めて高い類似度（{max_similarity:.3f}）により重複と判定"
-                elif max_similarity > 0.92:  # 92%+ similarity = UPDATE (ultra strict threshold)
+                elif max_similarity > 0.90:  # 90%+ similarity = UPDATE
                     decision = "UPDATE"
                     reasoning = f"極めて高い類似度（{max_similarity:.3f}）により明確な続報と判定 - 🆙絵文字付与"
                 else:
@@ -464,7 +465,7 @@ class ContextAnalyzer:
         japanese_ratio = len(japanese_chars) / total_chars
         return japanese_ratio < 0.5  # Less than 50% Japanese characters
 
-    async def _generate_simple_japanese_title(self, title: str) -> str | None:
+    async def _generate_simple_japanese_title(self, title: str) -> Union[str, None]:
         """Generate simple Japanese title translation."""
         try:
             if not self.llm_router:
@@ -528,7 +529,7 @@ class ContextAnalyzer:
         key_terms.extend(english_terms)
 
         # Extract Japanese tech terms
-        tech_terms = re.findall(r'(AI|LLM|API|CLI|GPU|CPU|SDK|開発|技術|システム|ツール|プラットフォーム)', title)
+        tech_terms = re.findall(r'(?:AI|LLM|API|CLI|GPU|CPU|SDK|開発|技術|システム|ツール|プラットフォーム)', title)
         key_terms.extend(tech_terms)
 
         # If we have key terms, use them
@@ -548,8 +549,8 @@ class ContextAnalyzer:
 
 async def analyze_article_context(
     article: SummarizedArticle,
-    embedding_manager: EmbeddingManager | None = None,
-    llm_router: LLMRouter | None = None
+    embedding_manager: Union[EmbeddingManager, None] = None,
+    llm_router: Union[LLMRouter, None] = None
 ) -> ContextAnalysisResult:
     """
     Convenience function to analyze article context.

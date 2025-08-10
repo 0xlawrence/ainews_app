@@ -422,9 +422,9 @@ class TestImageProcessor:
         """Test successful article image processing."""
         # Mock the fetcher
         mock_fetcher = Mock()
-        mock_temp_path = Path("/tmp/test_image.tmp")
-        mock_temp_path.exists = Mock(return_value=True)
-        mock_temp_path.stat = Mock(return_value=Mock(st_size=50000))
+        mock_temp_path = Mock(spec=Path)
+        mock_temp_path.exists.return_value = True
+        mock_temp_path.stat.return_value = Mock(st_size=50000)
         mock_temp_path.unlink = Mock()
         mock_fetcher.get_image_from_url.return_value = mock_temp_path
         mock_fetcher_class.return_value = mock_fetcher
@@ -434,13 +434,13 @@ class TestImageProcessor:
         mock_uploader.upload_image.return_value = "https://supabase.example.com/image.jpg"
         mock_uploader_class.return_value = mock_uploader
 
-        # Mock PIL Image
-        with patch('src.utils.image_processor.Image') as mock_image:
+        # Mock PIL Image (patch PIL.Image.open used inside image_processor)
+        with patch('PIL.Image.open') as mock_image:
             mock_img = Mock()
             mock_img.width = 600
             mock_img.height = 400
             mock_img.format = 'JPEG'
-            mock_image.open.return_value.__enter__.return_value = mock_img
+            mock_image.return_value.__enter__.return_value = mock_img
 
             processor = ImageProcessor()
             result = processor.process_article_image(
@@ -485,8 +485,8 @@ class TestImageProcessor:
         """Test article image processing when upload fails."""
         # Mock successful fetch
         mock_fetcher = Mock()
-        mock_temp_path = Path("/tmp/test_image.tmp")
-        mock_temp_path.exists = Mock(return_value=True)
+        mock_temp_path = Mock(spec=Path)
+        mock_temp_path.exists.return_value = True
         mock_temp_path.unlink = Mock()
         mock_fetcher.get_image_from_url.return_value = mock_temp_path
         mock_fetcher_class.return_value = mock_fetcher

@@ -14,41 +14,43 @@ mock_newsletter_content = """# AI ニュース: 2025年6月29日
 
 ## AI技術革新
 
+このセクションでは、本日の主要なAI関連ニュースを簡潔に整理し、日本語での理解促進を目的として解説を補足します。各記事は重要な発表点、影響範囲、今後の見通しを中心にまとめています。
+
 ### **OpenAI、GPT-5の性能向上を発表** 🆙
-OpenAIが最新のGPT-5モデルにおいて、推論性能とマルチモーダル機能の大幅な改良を発表しました。新しいモデルは従来比で30%高速化を実現し、より複雑なタスクを効率的に処理できるようになりました。
+OpenAIが最新のGPT-5モデルにおいて、推論性能とマルチモーダル機能の大幅な改良を発表しました。新しいモデルは従来比で30%高速化を実現し、より複雑なタスクを効率的に処理できるようになりました。企業の生産性向上や高度な自動化の実現に寄与すると見られます。
 [詳細はこちら](https://openai.com/gpt5-announcement)
 
 ### **Google、Gemini 2.0で新たなAIアシスタント機能を追加**
-Googleが開発したGemini 2.0において、コード生成とデバッグ機能が大幅に強化されました。開発者向けの新機能により、プログラミング効率が向上することが期待されています。
+Googleが開発したGemini 2.0において、コード生成とデバッグ機能が大幅に強化されました。開発者向けの新機能により、プログラミング効率が向上することが期待されています。教育や研究の現場でも使い勝手の良さが評価されそうです。
 [詳細はこちら](https://deepmind.google/gemini2-update)
 
 ### **Meta、LLaMAモデルの多言語対応を拡張**
-Metaが開発するLLaMAシリーズに日本語を含む15の新言語が追加されました。これにより、グローバルなAI応用がより身近になることが予想されます。
+Metaが開発するLLaMAシリーズに日本語を含む15の新言語が追加されました。これにより、グローバルなAI応用がより身近になることが予想されます。開発コミュニティにとっては多言語データの活用が進み、実用化の幅が広がります。
 [詳細はこちら](https://ai.meta.com/llama-multilingual)
 
 ### **Microsoft Azure AI、企業向けカスタムモデル構築サービス開始**
-Microsoft Azureが企業専用のAIモデルを構築できる新サービスを発表しました。セキュリティを重視した設計により、機密データを安全に活用できます。
+Microsoft Azureが企業専用のAIモデルを構築できる新サービスを発表しました。セキュリティを重視した設計により、機密データを安全に活用できます。日本国内の事業者にも適した運用ガイドが提示され、導入の敷居が下がる見込みです。
 [詳細はこちら](https://azure.microsoft.com/ai-custom-models)
 
 ### **NVIDIA、H200チップで推論速度を3倍向上**
-NVIDIAの新しいH200 GPUチップが発表され、AI推論処理において従来の3倍の高速化を実現しました。大規模言語モデルの実行効率が大幅に改善される見込みです。
+NVIDIAの新しいH200 GPUチップが発表され、AI推論処理において従来の3倍の高速化を実現しました。大規模言語モデルの実行効率が大幅に改善される見込みです。学習・推論の双方で電力効率を意識した設計が注目されています。
 [詳細はこちら](https://nvidia.com/h200-announcement)
 
 ### **Anthropic、Claude 3.5 Sonnetの新機能を発表** 🆙
-Anthropicが開発するClaude 3.5 Sonnetに、長文文書の要約機能と多段階推論機能が追加されました。学術研究や文書作成での活用が期待されています。
+Anthropicが開発するClaude 3.5 Sonnetに、長文文書の要約機能と多段階推論機能が追加されました。学術研究や文書作成での活用が期待されています。説明可能性の向上や、企業利用時の品質担保にも配慮した改善が行われています。
 [詳細はこちら](https://anthropic.com/claude-35-update)
 
 ### **Amazon、Bedrock AIサービスに新しい基盤モデルを追加**
-Amazon Web Servicesが提供するBedrockに、Titanシリーズの新モデルが追加されました。コスト効率と性能のバランスが改善されています。
+Amazon Web Servicesが提供するBedrockに、Titanシリーズの新モデルが追加されました。コスト効率と性能のバランスが改善されています。既存のマイクロサービス群と統合しやすく、運用の自動化にも寄与します。
 [詳細はこちら](https://aws.amazon.com/bedrock-titan-new)
 
 ### **IBM、企業向けAIガバナンスツールを発表**
-IBMが企業におけるAI利用の透明性と説明責任を確保するためのガバナンスツールを発表しました。AI倫理と規制遵守を支援します。
+IBMが企業におけるAI利用の透明性と説明責任を確保するためのガバナンスツールを発表しました。AI倫理と規制遵守を支援します。リスク管理の仕組みを統合し、監査可能性を高める点が評価されています。
 [詳細はこちら](https://ibm.com/ai-governance-tools)
 
 ## まとめ
 
-本日のAIニュースでは、大手テクノロジー企業による次世代AI技術の発表が相次ぎました。特に性能向上と多言語対応、企業向けソリューションの充実が目立っています。
+本日のAIニュースでは、大手テクノロジー企業による次世代AI技術の発表が相次ぎました。特に性能向上と多言語対応、企業向けソリューションの充実が目立っています。日本語話者にとっても、導入・運用に関する情報が増え、活用の実行可能性が高まっています。今後はコスト最適化、信頼性の担保、説明可能性の確保が普及の鍵になります。
 
 ---
 *このニュースレターは自動生成されています。最新情報は各リンク先をご確認ください。*
@@ -72,8 +74,11 @@ def create_mock_newsletter():
 
 def run_prd_compliance_test(newsletter_path):
     """Run PRD compliance test on the generated newsletter."""
-    # Add current directory to Python path
-    sys.path.insert(0, str(Path(__file__).parent))
+    # Ensure project root is on sys.path so that `from tests...` works
+    TESTS_DIR = Path(__file__).parent
+    PROJECT_ROOT = TESTS_DIR.parent
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
 
     try:
         from tests.test_prd_compliance import PRDComplianceChecker

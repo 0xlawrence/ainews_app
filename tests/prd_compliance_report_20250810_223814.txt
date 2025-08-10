@@ -1,0 +1,44 @@
+
+📊 PRD Compliance Test Report
+Generated: 2025-08-10 22:38:14
+
+SUMMARY:
+- Total Tests: 5
+- Passed: 5
+- Failed: 0
+- Success Rate: 100.0%
+
+DETAILED RESULTS:
+
+[PASS] Article Count Guarantee (F-15): Found 10 articles (requirement: 7-10)
+  - article_count: 10
+  - target_range: 7-10
+  - compliant: True
+  - headers_found: ['## 目次', '## 1. AIヌード画像生成の脅威：規制と倫理の狭間でプライバシー危機', '## 2. Sena S1：インターコム搭載スマートヘルメットで快適サイクリング', '## 3. NVIDIA警告：大規模言語モデル偏重からの脱却でAIの持続可能性を', '## 4. Zenityが企業AIプラットフォームの脆弱性「AgentFlayer」を発見']
+
+[PASS] UPDATE Detection (F-16): Update detection working properly
+  - update_keywords_found: 0
+  - update_emojis_found: 0
+  - has_updates: False
+  - has_emojis: False
+  - compliant: True
+
+[PASS] Citation Diversity (F-15): Citation diversity check
+  - total_citations: 6
+  - unique_citations: 6
+  - duplicate_count: 0
+  - duplication_rate: 0.00%
+  - unique_domains: 4
+  - compliant: True
+
+[PASS] Japanese Output: Japanese character ratio: 66.0%
+  - japanese_chars: 2410
+  - total_chars: 3650
+  - japanese_ratio: 66.0%
+  - target_ratio: ≥60%
+  - compliant: True
+
+[PASS] Template Compliance: Template structure check
+  - sections_found: {'section_0': 1, 'section_1': 10, 'section_2': 1, 'section_3': 6}
+  - missing_sections: []
+  - compliant: True

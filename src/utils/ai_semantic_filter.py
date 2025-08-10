@@ -268,8 +268,8 @@ class AISemanticFilter:
     async def filter_articles_with_semantic(
         self,
         articles: list[RawArticle],
-        base_threshold: float = 0.10,  # Match schemas.py config
-        min_threshold: float = 0.05   # Minimum threshold for article count assurance
+        base_threshold: float = 0.10,
+        min_threshold: float = 0.05
     ) -> list[FilteredArticle]:
         """セマンティック分析を含む高度なフィルタリング"""
 
@@ -320,8 +320,10 @@ class AISemanticFilter:
         filtered_articles = []
 
         for article, score, keywords, reason, semantic_result in enhanced_scores:
-            # 基本閾値をクリアするか、PRD要件(7-10記事)確保のため低閾値をクリア
-            if score >= base_threshold or (len(filtered_articles) < 15 and score >= min_threshold):
+            # 低閾値救済を適用する場合でも、AI関連キーワードが最低1つは必要
+            passes_main = score >= base_threshold
+            passes_relaxed = (len(filtered_articles) < 15 and score >= min_threshold and len(keywords) > 0)
+            if passes_main or passes_relaxed:
                 # セマンティック情報を含むメタデータを作成
                 semantic_metadata = {
                     'semantic_score': semantic_result.final_score,

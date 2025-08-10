@@ -7,6 +7,7 @@ processing logs, and article relationships.
 
 import os
 from datetime import datetime
+from typing import Union
 
 try:
     from supabase import Client, create_client
@@ -88,6 +89,10 @@ class SupabaseClient:
                 except (ValueError, IndexError):
                     pass  # Use current date as fallback
 
+            # Normalize newsletter content for safe storage
+            from src.utils.text_processing import normalize_unicode_content
+            normalized_content = normalize_unicode_content(newsletter_content)
+
             # Prepare data for processed_content table (matching phase2_tables.sql schema)
             content_data = {
                 "processing_date": processing_date.isoformat(),
@@ -97,7 +102,7 @@ class SupabaseClient:
                 "lead_paragraph": "Generated AI news newsletter",
                 "articles_count": len(articles),
                 "multi_source_topics": metadata.get("multi_source_topics", 0),
-                "content_md": newsletter_content,
+                "content_md": normalized_content,  # Use normalized content
                 "metadata": {
                     **metadata,
                     "processing_id": processing_id,
@@ -548,9 +553,9 @@ async def save_newsletter_to_supabase(
 async def save_contextual_article(
     article: ProcessedArticle,
     embedding: list[float] | None = None,
-    topic_cluster: str | None = None,
-    client: SupabaseClient | None = None
-) -> str | None:
+    topic_cluster: Union[str, None] = None,
+    client: Union[SupabaseClient, None] = None
+) -> Union[str, None]:
     """
     Save article to contextual_articles table.
 
@@ -574,18 +579,27 @@ async def save_contextual_article(
     try:
         raw_article = article.summarized_article.filtered_article.raw_article
 
+        # Normalize summary points for safe JSONB storage
+        from src.utils.text_processing import normalize_unicode_content
+        normalized_summary_points = []
+        for point in article.summarized_article.summary.summary_points:
+            if isinstance(point, str):
+                normalized_summary_points.append(normalize_unicode_content(point))
+            else:
+                normalized_summary_points.append(point)
+
         # Prepare contextual article data
         contextual_data = {
             "article_id": raw_article.id,
-            "title": raw_article.title,
-            "content_summary": " ".join(article.summarized_article.summary.summary_points),
+            "title": normalize_unicode_content(raw_article.title),
+            "content_summary": normalize_unicode_content(" ".join(normalized_summary_points)),
             "published_date": raw_article.published_date.isoformat(),
             "source_url": str(raw_article.url),
             "source_id": raw_article.source_id,
             "topic_cluster": topic_cluster,
             "ai_relevance_score": article.summarized_article.filtered_article.ai_relevance_score,
-            "summary_points": article.summarized_article.summary.summary_points,  # Store as JSONB
-            "japanese_title": getattr(article, 'japanese_title', None),
+            "summary_points": normalized_summary_points,  # Store as JSONB with normalized content
+            "japanese_title": normalize_unicode_content(getattr(article, 'japanese_title', None)) if getattr(article, 'japanese_title', None) else None,
             "is_update": getattr(article, 'is_update', False),
             "embedding": embedding  # Store embedding directly in contextual_articles
         }
@@ -621,8 +635,8 @@ async def save_article_relationship(
     child_article_uuid: str,
     relationship_type: str,
     similarity_score: float,
-    reasoning: str | None = None,
-    client: SupabaseClient | None = None
+    reasoning: Union[str, None] = None,
+    client: Union[SupabaseClient, None] = None
 ) -> bool:
     """
     Save article relationship to database.
@@ -686,7 +700,7 @@ async def save_article_relationship(
 async def get_recent_contextual_articles(
     days_back: int = 7,
     limit: int = 1000,
-    client: SupabaseClient | None = None
+    client: Union[SupabaseClient, None] = None
 ) -> list[dict]:
     """
     Get recent contextual articles with embeddings.
@@ -747,7 +761,7 @@ async def get_recent_contextual_articles(
 async def find_related_articles_by_id(
     article_id: str,
     max_results: int = 5,
-    client: SupabaseClient | None = None
+    client: Union[SupabaseClient, None] = None
 ) -> list[dict]:
     """
     Find articles related to a given article by its ID.
@@ -826,3 +840,302 @@ async def find_related_articles_by_id(
     except Exception as e:
         logger.error(f"Error finding related articles: {e}")
         return []
+
+
+# Bulk Operations (Phase 3.2d optimization)
+
+async def save_contextual_articles_bulk(
+    articles_data: list[dict],
+    client: Union[SupabaseClient, None] = None
+) -> list[Union[str, None]]:
+    """
+    Save multiple articles to contextual_articles table using bulk operations.
+    
+    Args:
+        articles_data: List of article data dictionaries prepared for bulk insert
+        client: Optional existing Supabase client
+        
+    Returns:
+        List of UUIDs for successfully saved articles (None for failed items)
+    """
+    if client is None:
+        client = await get_supabase_client()
+    
+    if not client.is_available():
+        logger.debug("Supabase not available, skipping bulk contextual articles save")
+        return [None] * len(articles_data)
+    
+    if not articles_data:
+        return []
+    
+    try:
+        from src.config.settings import get_settings
+        settings = get_settings()
+        
+        if not settings.processing.enable_db_bulk_operations:
+            logger.info("Database bulk operations disabled, using individual processing")
+            return await _save_contextual_articles_individually(articles_data, client)
+        
+        # Process in batches to avoid overwhelming the database
+        bulk_size = settings.processing.db_bulk_insert_size
+        results = [None] * len(articles_data)
+        
+        logger.info(f"Bulk saving {len(articles_data)} contextual articles in batches of {bulk_size}")
+        
+        for i in range(0, len(articles_data), bulk_size):
+            batch_data = articles_data[i:i + bulk_size]
+            batch_indices = list(range(i, min(i + bulk_size, len(articles_data))))
+            
+            try:
+                # Use upsert for bulk operations to handle conflicts
+                result = client.client.table("contextual_articles").upsert(
+                    batch_data,
+                    on_conflict="article_id"
+                ).execute()
+                
+                if result.data:
+                    # Map results back to original indices
+                    for j, record in enumerate(result.data):
+                        if j < len(batch_indices):
+                            results[batch_indices[j]] = record["id"]
+                    
+                    logger.debug(f"Bulk saved batch of {len(result.data)} contextual articles")
+                else:
+                    logger.error(f"Bulk save failed for batch {i//bulk_size + 1}")
+                    # Mark all items in this batch as failed
+                    for idx in batch_indices:
+                        results[idx] = None
+                
+            except Exception as batch_error:
+                logger.error(f"Bulk save batch {i//bulk_size + 1} failed: {batch_error}")
+                # Mark all items in this batch as failed
+                for idx in batch_indices:
+                    results[idx] = None
+        
+        successful_saves = sum(1 for r in results if r is not None)
+        success_rate = (successful_saves / len(articles_data)) * 100
+        
+        logger.info(
+            f"Bulk contextual articles save completed: {successful_saves}/{len(articles_data)} saved "
+            f"({success_rate:.1f}% success rate)"
+        )
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Bulk contextual articles save failed: {e}")
+        return [None] * len(articles_data)
+
+
+async def save_article_relationships_bulk(
+    relationships_data: list[dict],
+    client: Union[SupabaseClient, None] = None
+) -> list[bool]:
+    """
+    Save multiple article relationships using bulk operations.
+    
+    Args:
+        relationships_data: List of relationship data dictionaries
+        client: Optional existing Supabase client
+        
+    Returns:
+        List of boolean success indicators for each relationship
+    """
+    if client is None:
+        client = await get_supabase_client()
+    
+    if not client.is_available():
+        logger.debug("Supabase not available, skipping bulk relationships save")
+        return [False] * len(relationships_data)
+    
+    if not relationships_data:
+        return []
+    
+    try:
+        from src.config.settings import get_settings
+        settings = get_settings()
+        
+        if not settings.processing.enable_db_bulk_operations:
+            logger.info("Database bulk operations disabled for relationships, using individual processing")
+            return await _save_relationships_individually(relationships_data, client)
+        
+        # Process in batches
+        bulk_size = settings.processing.db_bulk_insert_size
+        results = [False] * len(relationships_data)
+        
+        logger.info(f"Bulk saving {len(relationships_data)} article relationships in batches of {bulk_size}")
+        
+        for i in range(0, len(relationships_data), bulk_size):
+            batch_data = relationships_data[i:i + bulk_size]
+            batch_indices = list(range(i, min(i + bulk_size, len(relationships_data))))
+            
+            try:
+                # Insert relationships (no upsert needed as they don't have natural keys)
+                result = client.client.table("article_relationships").insert(batch_data).execute()
+                
+                if result.data:
+                    # Mark all items in this batch as successful
+                    for idx in batch_indices:
+                        results[idx] = True
+                    
+                    logger.debug(f"Bulk saved batch of {len(result.data)} relationships")
+                else:
+                    logger.error(f"Bulk relationships save failed for batch {i//bulk_size + 1}")
+                    # Items remain False (default)
+                
+            except Exception as batch_error:
+                logger.error(f"Bulk relationships batch {i//bulk_size + 1} failed: {batch_error}")
+                # Items remain False (default)
+        
+        successful_saves = sum(results)
+        success_rate = (successful_saves / len(relationships_data)) * 100
+        
+        logger.info(
+            f"Bulk relationships save completed: {successful_saves}/{len(relationships_data)} saved "
+            f"({success_rate:.1f}% success rate)"
+        )
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Bulk relationships save failed: {e}")
+        return [False] * len(relationships_data)
+
+
+async def _save_contextual_articles_individually(
+    articles_data: list[dict],
+    client: SupabaseClient
+) -> list[Union[str, None]]:
+    """Fallback method to save contextual articles individually."""
+    results = []
+    
+    for article_data in articles_data:
+        try:
+            result = client.client.table("contextual_articles").upsert(
+                article_data,
+                on_conflict="article_id"
+            ).execute()
+            
+            if result.data:
+                results.append(result.data[0]["id"])
+            else:
+                results.append(None)
+                
+        except Exception as e:
+            logger.error(f"Individual contextual article save failed: {e}")
+            results.append(None)
+    
+    return results
+
+
+async def _save_relationships_individually(
+    relationships_data: list[dict],
+    client: SupabaseClient
+) -> list[bool]:
+    """Fallback method to save relationships individually."""
+    results = []
+    
+    for relationship_data in relationships_data:
+        try:
+            result = client.client.table("article_relationships").insert(relationship_data).execute()
+            results.append(bool(result.data))
+            
+        except Exception as e:
+            logger.error(f"Individual relationship save failed: {e}")
+            results.append(False)
+    
+    return results
+
+
+# Bulk Operation Helpers
+
+def prepare_contextual_articles_bulk_data(
+    articles: list[ProcessedArticle],
+    embeddings: list[Union[list[float], None]],
+    topic_clusters: list[Union[str, None]] = None
+) -> list[dict]:
+    """
+    Prepare contextual articles data for bulk insertion.
+    
+    Args:
+        articles: List of ProcessedArticle objects
+        embeddings: List of embedding vectors (same order as articles)
+        topic_clusters: Optional list of topic cluster IDs
+        
+    Returns:
+        List of data dictionaries ready for bulk insert
+    """
+    if topic_clusters is None:
+        topic_clusters = [None] * len(articles)
+    
+    bulk_data = []
+    
+    for i, (article, embedding, topic_cluster) in enumerate(zip(articles, embeddings, topic_clusters)):
+        try:
+            raw_article = article.summarized_article.filtered_article.raw_article
+            
+            # Normalize summary points for safe JSONB storage
+            from src.utils.text_processing import normalize_unicode_content
+            normalized_summary_points = []
+            for point in article.summarized_article.summary.summary_points:
+                if isinstance(point, str):
+                    normalized_summary_points.append(normalize_unicode_content(point))
+                else:
+                    normalized_summary_points.append(point)
+            
+            contextual_data = {
+                "article_id": raw_article.id,
+                "title": normalize_unicode_content(raw_article.title),
+                "content_summary": normalize_unicode_content(" ".join(normalized_summary_points)),
+                "published_date": raw_article.published_date.isoformat(),
+                "source_url": str(raw_article.url),
+                "source_id": raw_article.source_id,
+                "topic_cluster": topic_cluster,
+                "ai_relevance_score": article.summarized_article.filtered_article.ai_relevance_score,
+                "summary_points": normalized_summary_points,  # Store as JSONB with normalized content
+                "japanese_title": normalize_unicode_content(getattr(article, 'japanese_title', None)) if getattr(article, 'japanese_title', None) else None,
+                "is_update": getattr(article, 'is_update', False),
+                "embedding": embedding  # Store embedding directly
+            }
+            
+            bulk_data.append(contextual_data)
+            
+        except Exception as e:
+            logger.error(f"Failed to prepare contextual article data for index {i}: {e}")
+            # Skip invalid articles rather than failing the entire bulk operation
+            continue
+    
+    return bulk_data
+
+
+def prepare_relationships_bulk_data(
+    relationships: list[tuple[str, str, str, float, Union[str, None]]]
+) -> list[dict]:
+    """
+    Prepare relationship data for bulk insertion.
+    
+    Args:
+        relationships: List of tuples (parent_uuid, child_uuid, type, score, reasoning)
+        
+    Returns:
+        List of data dictionaries ready for bulk insert
+    """
+    bulk_data = []
+    
+    for parent_uuid, child_uuid, relationship_type, similarity_score, reasoning in relationships:
+        try:
+            relationship_data = {
+                "parent_article_id": parent_uuid,
+                "child_article_id": child_uuid,
+                "relationship_type": relationship_type,
+                "similarity_score": similarity_score,
+                "reasoning": reasoning
+            }
+            
+            bulk_data.append(relationship_data)
+            
+        except Exception as e:
+            logger.error(f"Failed to prepare relationship data: {e}")
+            continue
+    
+    return bulk_data

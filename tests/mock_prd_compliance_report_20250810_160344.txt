@@ -1,12 +1,12 @@
 
 📊 PRD Compliance Test Report
-Generated: 2025-06-29 19:05:27
+Generated: 2025-08-10 16:03:44
 
 SUMMARY:
 - Total Tests: 5
-- Passed: 4
-- Failed: 1
-- Success Rate: 80.0%
+- Passed: 5
+- Failed: 0
+- Success Rate: 100.0%
 
 DETAILED RESULTS:
 
@@ -31,12 +31,12 @@ DETAILED RESULTS:
   - unique_domains: 8
   - compliant: True
 
-[FAIL] Japanese Output: Japanese character ratio: 51.9%
-  - japanese_chars: 756
-  - total_chars: 1458
-  - japanese_ratio: 51.9%
+[PASS] Japanese Output: Japanese character ratio: 61.6%
+  - japanese_chars: 1167
+  - total_chars: 1896
+  - japanese_ratio: 61.6%
   - target_ratio: ≥60%
-  - compliant: False
+  - compliant: True
 
 [PASS] Template Compliance: Template structure check
   - sections_found: {'section_0': 1, 'section_1': 10, 'section_2': 8, 'section_3': 8}

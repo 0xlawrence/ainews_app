@@ -6,12 +6,17 @@ for contextual article analysis and relationship detection.
 """
 
 # Standard library imports
+import asyncio
 import json
+import time
 from datetime import datetime
 from pathlib import Path
+from typing import Union, Optional
 
 # Third-party imports
 import numpy as np
+import weakref
+from collections import OrderedDict
 
 # ---------------------------------------------------------------------------
 # Optional FAISS import
@@ -83,79 +88,192 @@ from openai import OpenAI
 from src.config.settings import get_settings
 from src.models.schemas import SummarizedArticle
 from src.utils.logger import setup_logging
+from src.utils.memory_manager import get_memory_manager, track_memory_usage
 
 logger = setup_logging()
 
 
+class LRUCache:
+    """Memory-aware LRU cache with size limits."""
+    
+    def __init__(self, max_size: int = 1000, max_memory_mb: float = 100.0):
+        """Initialize LRU cache with memory limits.
+        
+        Args:
+            max_size: Maximum number of items
+            max_memory_mb: Maximum memory usage in MB
+        """
+        self.max_size = max_size
+        self.max_memory_bytes = max_memory_mb * 1024 * 1024
+        self.cache = OrderedDict()
+        self.memory_usage = 0
+        
+        # Register with memory manager
+        get_memory_manager().track_cache_object(self)
+    
+    def get(self, key: str) -> Optional[np.ndarray]:
+        """Get item from cache."""
+        if key in self.cache:
+            # Move to end (most recently used)
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        return None
+    
+    def put(self, key: str, value: np.ndarray):
+        """Put item in cache with memory management."""
+        value_size = value.nbytes
+        
+        # Check if single item is too large
+        if value_size > self.max_memory_bytes:
+            logger.warning(f"Item too large for cache: {value_size / 1024 / 1024:.1f}MB")
+            return
+        
+        # Remove existing key if present
+        if key in self.cache:
+            old_value = self.cache[key]
+            self.memory_usage -= old_value.nbytes
+            del self.cache[key]
+        
+        # Evict items until we have space
+        while (len(self.cache) >= self.max_size or 
+               self.memory_usage + value_size > self.max_memory_bytes):
+            if not self.cache:
+                break
+            
+            # Remove least recently used item
+            lru_key, lru_value = self.cache.popitem(last=False)
+            self.memory_usage -= lru_value.nbytes
+            logger.debug(f"Evicted cache item: {lru_key}")
+        
+        # Add new item
+        self.cache[key] = value
+        self.memory_usage += value_size
+        
+        logger.debug(f"Cache: {len(self.cache)}/{self.max_size} items, "
+                    f"{self.memory_usage / 1024 / 1024:.1f}MB/{self.max_memory_bytes / 1024 / 1024:.1f}MB")
+    
+    def clear(self):
+        """Clear all cache items."""
+        self.cache.clear()
+        self.memory_usage = 0
+        logger.info("Cache cleared")
+    
+    def get_stats(self) -> dict:
+        """Get cache statistics."""
+        return {
+            "size": len(self.cache),
+            "max_size": self.max_size,
+            "memory_mb": self.memory_usage / 1024 / 1024,
+            "max_memory_mb": self.max_memory_bytes / 1024 / 1024,
+            "memory_usage_percent": (self.memory_usage / self.max_memory_bytes) * 100
+        }
+
+
 class EmbeddingManager:
-    """Manages embeddings and similarity search using OpenAI + FAISS."""
+    """Manages embeddings and similarity search using OpenAI + FAISS with memory management."""
 
     def __init__(
         self,
         model: str = "text-embedding-3-small",
         dimension: int = 1536,
         index_path: str = "data/faiss/index.bin",
-        metadata_path: str = "data/faiss/metadata.json"
+        metadata_path: str = "data/faiss/metadata.json",
+        cache_size: Optional[int] = None,
+        cache_memory_mb: Optional[float] = None
     ):
         """
-        Initialize embedding manager.
+        Initialize embedding manager with memory management and optimized batch processing.
 
         Args:
             model: OpenAI embedding model
             dimension: Embedding dimension
             index_path: Path to FAISS index file
             metadata_path: Path to metadata file
+            cache_size: Maximum cache entries (uses settings if None)
+            cache_memory_mb: Maximum cache memory in MB (uses settings if None)
         """
+        self.settings = get_settings()
         self.model = model
         self.dimension = dimension
         self.index_path = Path(index_path)
         self.metadata_path = Path(metadata_path)
-
+        
+        # Use configuration-based cache settings with fallbacks
+        effective_cache_size = cache_size or self.settings.processing.embedding_cache_size
+        effective_cache_memory = cache_memory_mb or self.settings.processing.embedding_cache_memory_mb
+        
+        # Initialize memory-aware cache with optimized settings
+        self.embedding_cache = LRUCache(effective_cache_size, effective_cache_memory)
+        
         # Ensure directories exist
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize OpenAI client using settings
+        self.openai_client = self._initialize_openai_client()
+        
+        # Initialize FAISS index with memory management
+        self.index = None
+        self.metadata = []
+        self._max_vectors_in_memory = 10000  # Limit in-memory vectors
+        
+        self._load_or_create_index()
+        
+        # Register for cleanup
+        memory_manager = get_memory_manager()
+        memory_manager.track_large_object(self)
+        memory_manager.add_cleanup_callback(self.cleanup_resources)
+        
+        logger.info(f"EmbeddingManager initialized: {dimension}D, cache: {cache_size} items")
+
+    def _initialize_openai_client(self) -> Optional[OpenAI]:
+        """Initialize OpenAI client with error handling."""
         try:
             settings = get_settings()
             api_key = settings.llm.openai_api_key
             if not api_key:
                 logger.warning("OpenAI API key not found in settings")
-                self.openai_client = None
-            else:
-                self.openai_client = OpenAI(api_key=api_key)
-                logger.info("OpenAI client initialized successfully")
+                return None
+            
+            client = OpenAI(api_key=api_key)
+            logger.info("OpenAI client initialized successfully")
+            return client
+            
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}")
-            self.openai_client = None
-
-        # Initialize FAISS index
-        self.index = None
-        self.metadata = []
-
-        self._load_or_create_index()
+            return None
 
     def _load_or_create_index(self) -> None:
-        """Load existing index or create new one."""
-
+        """Load existing index or create new one with memory limits."""
         try:
             if self.index_path.exists() and self.metadata_path.exists():
+                # Check file size before loading
+                index_size_mb = self.index_path.stat().st_size / 1024 / 1024
+                
+                if index_size_mb > 500:  # 500MB limit
+                    logger.warning(f"Index file too large ({index_size_mb:.1f}MB), creating new index")
+                    self._create_new_index()
+                    return
+                
                 # Load existing index
                 self.index = faiss.read_index(str(self.index_path))
 
                 with open(self.metadata_path, encoding='utf-8') as f:
                     self.metadata = json.load(f)
 
+                # Limit metadata in memory
+                if len(self.metadata) > self._max_vectors_in_memory:
+                    logger.info(f"Limiting metadata to {self._max_vectors_in_memory} recent entries")
+                    self.metadata = self.metadata[-self._max_vectors_in_memory:]
+
                 logger.info(
-                    "Loaded existing FAISS index",
-                    vectors_count=self.index.ntotal,
-                    metadata_count=len(self.metadata)
+                    f"Loaded FAISS index: {self.index.ntotal if self.index else 0} vectors, "
+                    f"{len(self.metadata)} metadata entries, {index_size_mb:.1f}MB"
                 )
             else:
-                # Create new index
                 self._create_new_index()
 
         except Exception as e:
-            logger.error("Failed to load FAISS index", error=str(e))
+            logger.error(f"Failed to load FAISS index: {e}")
             self._create_new_index()
 
     def _create_new_index(self) -> None:
@@ -164,39 +282,41 @@ class EmbeddingManager:
         # Create flat index for cosine similarity
         self.index = faiss.IndexFlatIP(self.dimension)
         self.metadata = []
+        logger.info(f"Created new FAISS index: {self.dimension}D")
 
-        logger.info(
-            "Created new FAISS index",
-            dimension=self.dimension,
-            index_type="IndexFlatIP"
-        )
-
+    @track_memory_usage("save_index")
     def _save_index(self) -> None:
-        """Save index and metadata to disk."""
-
+        """Save index and metadata to disk with memory management."""
         try:
             # Save FAISS index
-            faiss.write_index(self.index, str(self.index_path))
+            if self.index:
+                faiss.write_index(self.index, str(self.index_path))
 
-            # Save metadata
+            # Save metadata with compression
+            metadata_to_save = self.metadata[-self._max_vectors_in_memory:]
             with open(self.metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(self.metadata, f, indent=2, ensure_ascii=False)
+                json.dump(metadata_to_save, f, separators=(',', ':'))  # Compact format
 
-            logger.debug(
-                "Saved FAISS index",
-                vectors_count=self.index.ntotal,
-                metadata_count=len(self.metadata)
-            )
+            logger.info(f"Saved FAISS index: {len(metadata_to_save)} metadata entries")
 
         except Exception as e:
-            logger.error("Failed to save FAISS index", error=str(e))
+            logger.error(f"Failed to save FAISS index: {e}")
 
-    async def generate_embedding(self, text: str) -> np.ndarray | None:
-        """Generate embedding for text using OpenAI API."""
-
+    @track_memory_usage("generate_embedding")
+    async def generate_embedding(self, text: str) -> Optional[np.ndarray]:
+        """Generate embedding with caching and memory management."""
         if not self.openai_client:
             logger.warning("OpenAI client not available")
             return None
+
+        # Create cache key
+        cache_key = f"{self.model}:{hash(text)}"
+        
+        # Check cache first
+        cached_embedding = self.embedding_cache.get(cache_key)
+        if cached_embedding is not None:
+            logger.debug("Retrieved embedding from cache")
+            return cached_embedding
 
         try:
             # Clean and prepare text
@@ -217,25 +337,178 @@ class EmbeddingManager:
 
             # Generate embedding
             response = self.openai_client.embeddings.create(**embedding_params)
-
             embedding = np.array(response.data[0].embedding, dtype=np.float32)
 
             # Normalize for cosine similarity
             embedding = embedding / np.linalg.norm(embedding)
 
-            logger.debug(
-                "Generated embedding",
-                text_length=len(clean_text),
-                embedding_shape=embedding.shape,
-                model=self.model,
-                dimensions=self.dimension
-            )
+            # Cache the embedding
+            self.embedding_cache.put(cache_key, embedding)
 
+            logger.debug(f"Generated and cached embedding: {embedding.shape}, text length: {len(clean_text)}")
             return embedding
 
         except Exception as e:
-            logger.error("Failed to generate embedding", error=str(e))
+            logger.error(f"Failed to generate embedding: {e}")
             return None
+
+    @track_memory_usage("generate_embeddings_batch")
+    async def generate_embeddings_batch(
+        self, 
+        texts: list[str], 
+        batch_size: int = 100,
+        max_concurrent_batches: int = 3
+    ) -> list[Optional[np.ndarray]]:
+        """
+        Generate embeddings for multiple texts using batch processing.
+        
+        This method significantly improves performance by:
+        - Using OpenAI's batch embedding API (up to 2048 inputs per request)
+        - Processing multiple batches concurrently
+        - Leveraging cache for already processed texts
+        - Maintaining input order in results
+        
+        Args:
+            texts: List of texts to generate embeddings for
+            batch_size: Number of texts per batch (max 2048 for OpenAI)
+            max_concurrent_batches: Maximum concurrent batch requests
+            
+        Returns:
+            List of embeddings in same order as input texts (None for failed items)
+        """
+        if not self.openai_client:
+            logger.warning("OpenAI client not available for batch processing")
+            return [None] * len(texts)
+        
+        if not texts:
+            return []
+            
+        # Step 1: Check cache and prepare uncached texts
+        results = [None] * len(texts)
+        uncached_indices = []
+        uncached_texts = []
+        
+        for i, text in enumerate(texts):
+            cache_key = f"{self.model}:{hash(text)}"
+            cached_embedding = self.embedding_cache.get(cache_key)
+            
+            if cached_embedding is not None:
+                results[i] = cached_embedding
+                logger.debug(f"Retrieved embedding {i} from cache")
+            else:
+                uncached_indices.append(i)
+                
+                # Clean and prepare text
+                clean_text = text.replace('\n', ' ').strip()
+                if len(clean_text) > 8000:  # OpenAI limit
+                    clean_text = clean_text[:8000]
+                uncached_texts.append(clean_text)
+        
+        if not uncached_texts:
+            logger.info(f"All {len(texts)} embeddings retrieved from cache")
+            return results
+            
+        logger.info(f"Processing {len(uncached_texts)} uncached embeddings in batches of {batch_size}")
+        
+        # Step 2: Create batches for uncached texts
+        batches = []
+        batch_indices = []
+        
+        for i in range(0, len(uncached_texts), batch_size):
+            batch_texts = uncached_texts[i:i + batch_size]
+            batch_idx = uncached_indices[i:i + batch_size]
+            batches.append(batch_texts)
+            batch_indices.append(batch_idx)
+        
+        # Step 3: Process batches concurrently with semaphore
+        semaphore = asyncio.Semaphore(max_concurrent_batches)
+        
+        async def process_batch(batch_texts: list[str], batch_idx: list[int]) -> list[tuple[int, Optional[np.ndarray]]]:
+            """Process a single batch of texts."""
+            async with semaphore:
+                try:
+                    # Prepare embedding parameters
+                    embedding_params = {
+                        "model": self.model,
+                        "input": batch_texts,  # Send entire batch
+                        "encoding_format": "float"
+                    }
+                    
+                    # Add dimensions parameter for text-embedding-3-* models
+                    if "text-embedding-3" in self.model and self.dimension != 3072:
+                        embedding_params["dimensions"] = self.dimension
+                    
+                    # Make batch API call
+                    logger.debug(f"Making batch embedding request for {len(batch_texts)} texts")
+                    response = self.openai_client.embeddings.create(**embedding_params)
+                    
+                    # Process results
+                    batch_results = []
+                    for j, embedding_data in enumerate(response.data):
+                        try:
+                            # Convert to numpy array and normalize
+                            embedding = np.array(embedding_data.embedding, dtype=np.float32)
+                            embedding = embedding / np.linalg.norm(embedding)
+                            
+                            # Cache the embedding
+                            original_idx = batch_idx[j]
+                            original_text = texts[original_idx]
+                            cache_key = f"{self.model}:{hash(original_text)}"
+                            self.embedding_cache.put(cache_key, embedding)
+                            
+                            batch_results.append((original_idx, embedding))
+                            
+                        except Exception as e:
+                            logger.error(f"Failed to process embedding {j} in batch: {e}")
+                            batch_results.append((batch_idx[j], None))
+                    
+                    logger.debug(f"Successfully processed batch: {len(batch_results)} embeddings")
+                    return batch_results
+                    
+                except Exception as e:
+                    logger.error(f"Batch embedding generation failed: {e}")
+                    # Return None for all items in failed batch
+                    return [(idx, None) for idx in batch_idx]
+        
+        # Step 4: Execute all batches concurrently
+        batch_tasks = [
+            process_batch(batch_texts, batch_idx) 
+            for batch_texts, batch_idx in zip(batches, batch_indices)
+        ]
+        
+        start_time = time.time()
+        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+        processing_time = time.time() - start_time
+        
+        # Step 5: Merge batch results back into original order
+        successful_batches = 0
+        total_embeddings_generated = 0
+        
+        for batch_result in batch_results:
+            if isinstance(batch_result, Exception):
+                logger.error(f"Batch processing exception: {batch_result}")
+                continue
+                
+            successful_batches += 1
+            for original_idx, embedding in batch_result:
+                results[original_idx] = embedding
+                if embedding is not None:
+                    total_embeddings_generated += 1
+        
+        # Step 6: Log performance metrics
+        cache_hits = len(texts) - len(uncached_texts)
+        success_rate = (total_embeddings_generated / len(uncached_texts)) * 100 if uncached_texts else 100
+        
+        logger.info(
+            f"Batch embedding generation completed: "
+            f"{total_embeddings_generated}/{len(uncached_texts)} generated, "
+            f"{cache_hits} cache hits, "
+            f"{success_rate:.1f}% success rate, "
+            f"{processing_time:.2f}s total, "
+            f"{len(batches)} batches processed"
+        )
+        
+        return results
 
     async def add_article(
         self,
@@ -574,7 +847,7 @@ class EmbeddingManager:
         article_id: str,
         text: str,
         force_regenerate: bool = False
-    ) -> np.ndarray | None:
+    ) -> Optional[np.ndarray]:
         """
         Get existing embedding or create new one.
 
@@ -604,7 +877,7 @@ class EmbeddingManager:
     # Compatibility helpers
     # ---------------------------------------------------------------------
 
-    async def get_embedding(self, text: str) -> np.ndarray | None:
+    async def get_embedding(self, text: str) -> Optional[np.ndarray]:
         """Alias maintained for backward-compatibility.
 
         A number of downstream utilities – e.g. ``TopicClusterer`` – still
@@ -618,55 +891,51 @@ class EmbeddingManager:
 
         return await self.generate_embedding(text)
 
-    def cleanup_resources(self) -> None:
-        """
-        Clean up resources to prevent memory leaks.
+    def cleanup_resources(self):
+        """Clean up all resources to prevent memory leaks."""
+        logger.info("Cleaning up EmbeddingManager resources")
+        
+        # Clear cache
+        if hasattr(self, 'embedding_cache'):
+            self.embedding_cache.clear()
+        
+        # Clear metadata if too large
+        if hasattr(self, 'metadata') and len(self.metadata) > 1000:
+            self.metadata = self.metadata[-1000:]  # Keep recent 1000
+            logger.info("Truncated metadata to 1000 recent entries")
+        
+        # Clear FAISS index if too large
+        if hasattr(self, 'index') and self.index and self.index.ntotal > self._max_vectors_in_memory:
+            logger.warning(f"Index has {self.index.ntotal} vectors, clearing to prevent memory issues")
+            self._create_new_index()
 
-        This method should be called at the end of newsletter generation
-        to free up memory used by FAISS index and metadata cache.
-        """
-        try:
-            # Clear metadata cache
-            if hasattr(self, 'metadata') and self.metadata:
-                original_count = len(self.metadata)
-                self.metadata.clear()
-                logger.info(f"Cleared {original_count} metadata entries from memory")
-
-            # Reset FAISS index to free memory
-            if hasattr(self, 'index') and self.index:
-                # Create a new empty index of the same dimension
-                self._create_new_index()
-                logger.info("Reset FAISS index to free memory")
-
-            # Clear OpenAI client if needed (optional - client is lightweight)
-            # self.openai_client = None  # Uncomment if memory is critical
-
-            logger.info("EmbeddingManager cleanup completed successfully")
-
-        except Exception as e:
-            logger.warning(f"Error during EmbeddingManager cleanup: {e}")
-
-    def get_memory_usage_stats(self) -> dict[str, int]:
-        """
-        Get current memory usage statistics.
-
-        Returns:
-            Dictionary with memory usage statistics
-        """
+    def get_memory_usage_stats(self) -> dict:
+        """Get detailed memory usage statistics."""
         stats = {
+            "cache_stats": self.embedding_cache.get_stats() if hasattr(self, 'embedding_cache') else {},
+            "index_vectors": self.index.ntotal if self.index else 0,
             "metadata_count": len(self.metadata) if hasattr(self, 'metadata') else 0,
-            "index_total_vectors": self.index.ntotal if hasattr(self, 'index') else 0,
-            "dimension": self.dimension
+            "estimated_index_memory_bytes": 0,
+            "estimated_metadata_memory_bytes": 0
         }
-
+        
         # Estimate memory usage
-        if hasattr(self, 'index') and self.index.ntotal > 0:
-            # Rough estimate: each vector is dimension * 4 bytes (float32)
-            stats["estimated_index_memory_bytes"] = self.index.ntotal * self.dimension * 4
-        else:
-            stats["estimated_index_memory_bytes"] = 0
-
+        if self.index and self.index.ntotal > 0:
+            # Approximate: 4 bytes per float * dimension * number of vectors
+            stats["estimated_index_memory_bytes"] = 4 * self.dimension * self.index.ntotal
+        
+        if hasattr(self, 'metadata'):
+            # Rough estimate: 200 bytes per metadata entry
+            stats["estimated_metadata_memory_bytes"] = len(self.metadata) * 200
+        
         return stats
+
+    def __del__(self):
+        """Destructor to ensure cleanup."""
+        try:
+            self.cleanup_resources()
+        except Exception:
+            pass  # Ignore errors in destructor
 
 
 # Convenience functions
@@ -677,7 +946,7 @@ async def create_embedding_manager() -> EmbeddingManager:
 
 async def add_articles_to_index(
     articles: list[SummarizedArticle],
-    embedding_manager: EmbeddingManager | None = None
+    embedding_manager: Union[EmbeddingManager, None] = None
 ) -> int:
     """
     Add multiple articles to embedding index.

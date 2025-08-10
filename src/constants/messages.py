@@ -1,3 +1,4 @@
+from typing import Union
 """
 Centralized error messages, defaults, and text templates.
 
@@ -145,9 +146,9 @@ CLEANING_PATTERNS = {
         r'(SDK)の([^のSDK]+)\\1', # "SDKの利用SDK" -> "SDKの利用"
 
         # Tech terms with particles
-        r'(LLM|AI|GPT|API|SDK)で\\1',    # "LLMでLLM" -> "LLM"
-        r'(LLM|AI|GPT|API|SDK)が\\1',    # "AIがAI" -> "AI"
-        r'(LLM|AI|GPT|API|SDK)を\\1',    # "GPTをGPT" -> "GPT"
+        r'((?:LLM|AI|GPT|API|SDK))で\\1',    # "LLMでLLM" -> "LLM"
+        r'((?:LLM|AI|GPT|API|SDK))が\\1',    # "AIがAI" -> "AI"
+        r'((?:LLM|AI|GPT|API|SDK))を\\1',    # "GPTをGPT" -> "GPT"
 
         # Broader duplication patterns
         r'(\\w+)の(\\w+)で\\1',           # "技術の実装で技術" -> "技術の実装"
@@ -155,7 +156,7 @@ CLEANING_PATTERNS = {
         r'(\\w+)で(\\w+)の\\1',           # "開発で技術の開発" -> "開発で技術"
 
         # Company/product duplications
-        r'(OpenAI|Anthropic|Google|Microsoft)の(\\w+)\\1',
-        r'(ChatGPT|Claude|Gemini|Copilot)の(\\w+)\\1'
+        r'((?:OpenAI|Anthropic|Google|Microsoft))の(\\w+)\\1',
+        r'((?:ChatGPT|Claude|Gemini|Copilot))の(\\w+)\\1'
     ]
 }

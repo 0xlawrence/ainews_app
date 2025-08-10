@@ -11,14 +11,14 @@ from __future__ import annotations
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, Union
 
 from src.utils.logger import setup_logging
 
 logger: Final = setup_logging()
 
 
-def backup_file(file_path: str | Path) -> Path:
+def backup_file(file_path: Union[str, Path]) -> Path:
     """Copy *file_path* into the daily backup directory.
 
     Returns the destination path.  Any errors are propagated to the caller.

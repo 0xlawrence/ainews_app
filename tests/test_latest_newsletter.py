@@ -5,7 +5,18 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tests.test_prd_compliance import PRDComplianceChecker
+# Some test runners import without package context; support both cases
+try:
+    from tests.test_prd_compliance import PRDComplianceChecker
+except Exception:  # pragma: no cover - robust fallback
+    import os
+    import sys
+    from pathlib import Path
+    TESTS_DIR = Path(__file__).parent
+    PROJECT_ROOT = TESTS_DIR.parent
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from tests.test_prd_compliance import PRDComplianceChecker
 
 
 def test_newsletter(newsletter_path):

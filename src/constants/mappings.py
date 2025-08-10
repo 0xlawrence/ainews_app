@@ -1,3 +1,4 @@
+from typing import Union
 """
 Centralized mappings for company names, products, and sources.
 
@@ -94,28 +95,28 @@ CREDIBLE_SOURCE_MAPPINGS = {
 
 # Regex patterns for company detection
 COMPANY_PATTERNS = [
-    r'(OpenAI|ChatGPT|GPT-\d+)',
-    r'(Google|Alphabet|DeepMind|Gemini)',
-    r'(Meta|Facebook|Instagram)',
-    r'(Microsoft|Azure|Copilot)',
-    r'(Apple|iPhone|iPad|macOS)',
-    r'(Amazon|AWS|Alexa)',
-    r'(NVIDIA|Tesla|SpaceX)',
-    r'(Anthropic|Claude)',
-    r'(IBM|Watson)',
-    r'(Samsung|LG|Sony)'
+    r'((?:OpenAI|ChatGPT)|GPT-\d+)',
+    r'((?:Google|Alphabet)|(?:DeepMind|Gemini))',
+    r'((?:Meta|Facebook)|Instagram)',
+    r'((?:Microsoft|Azure)|Copilot)',
+    r'((?:Apple|iPhone)|(?:iPad|macOS))',
+    r'((?:Amazon|AWS)|Alexa)',
+    r'((?:NVIDIA|Tesla)|SpaceX)',
+    r'((?:Anthropic|Claude))',
+    r'((?:IBM|Watson))',
+    r'((?:Samsung|LG)|Sony)'
 ]
 
 # Regex patterns for product detection
 PRODUCT_PATTERNS = [
-    r'(GPT-\d+(?:\.\d+)?|ChatGPT|GPT)',
+    r'(GPT-\d+(?:\.\d+)?|(?:ChatGPT|GPT))',
     r'(Claude(?:-\d+)?)',
     r'(Gemini(?:\s+\d+\.\d+)?)',
-    r'(LLaMA|Llama)',
-    r'(DALL-E|DALL·E)',
+    r'((?:LLaMA|Llama))',
+    r'(DALL-(?:E|DALL)·E)',
     r'(Midjourney)',
     r'(Stable\s+Diffusion)',
-    r'(PyTorch|TensorFlow)',
+    r'((?:PyTorch|TensorFlow))',
     r'(Transformers)',
     r'(Hugging\s+Face)'
 ]

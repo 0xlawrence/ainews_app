@@ -1,0 +1,44 @@
+
+📊 PRD Compliance Test Report
+Generated: 2025-08-10 22:35:32
+
+SUMMARY:
+- Total Tests: 5
+- Passed: 2
+- Failed: 3
+- Success Rate: 40.0%
+
+DETAILED RESULTS:
+
+[FAIL] Article Count Guarantee (F-15): Found 11 articles (requirement: 7-10)
+  - article_count: 11
+  - target_range: 7-10
+  - compliant: False
+  - headers_found: ['### LLM・AIの企業活用と技術進展', '### 目次', '## 1. AIヌード画像販売拡大、非同意ディープフェイク問題深刻化と富の集中', '## 2. Senaスマートヘルメット：メッシュ通信で長距離ライドを快適に', '## 3. AIエージェント、大規模LLM偏重からの脱却で持続可能性を']
+
+[PASS] UPDATE Detection (F-16): Update detection working properly
+  - update_keywords_found: 0
+  - update_emojis_found: 2
+  - has_updates: False
+  - has_emojis: True
+  - compliant: True
+
+[FAIL] Citation Diversity (F-15): Citation diversity check
+  - total_citations: 10
+  - unique_citations: 8
+  - duplicate_count: 2
+  - duplication_rate: 20.00%
+  - unique_domains: 6
+  - compliant: False
+
+[FAIL] Japanese Output: Japanese character ratio: 51.9%
+  - japanese_chars: 2612
+  - total_chars: 5028
+  - japanese_ratio: 51.9%
+  - target_ratio: ≥60%
+  - compliant: False
+
+[PASS] Template Compliance: Template structure check
+  - sections_found: {'section_0': 1, 'section_1': 11, 'section_2': 10, 'section_3': 10}
+  - missing_sections: []
+  - compliant: True

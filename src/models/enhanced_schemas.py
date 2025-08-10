@@ -7,7 +7,7 @@ quality metrics, and structured outputs for improved reliability.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Union
 
 from pydantic import BaseModel, Field, validator
 
@@ -48,9 +48,9 @@ class ValidationRule(BaseModel):
 
     rule_id: str = Field(..., description="Unique rule identifier")
     rule_type: Literal["regex", "length", "forbidden_words", "structure"] = Field(..., description="Type of validation")
-    pattern: str | None = Field(None, description="Regex pattern for regex rules")
-    min_value: int | None = Field(None, description="Minimum value for length rules")
-    max_value: int | None = Field(None, description="Maximum value for length rules")
+    pattern: Union[str, None] = Field(None, description="Regex pattern for regex rules")
+    min_value: Union[int, None] = Field(None, description="Minimum value for length rules")
+    max_value: Union[int, None] = Field(None, description="Maximum value for length rules")
     forbidden_items: list[str] = Field(default_factory=list, description="Forbidden words/phrases")
     severity: Literal["error", "warning", "info"] = Field(default="warning", description="Rule severity")
     message: str = Field(..., description="Validation message")
@@ -86,8 +86,8 @@ class StructuredSummary(BaseModel):
     token_usage: dict[str, int] = Field(default_factory=dict, description="Token usage stats")
 
     # Quality metrics
-    readability_score: float | None = Field(None, ge=0.0, le=10.0, description="Readability score")
-    coherence_score: float | None = Field(None, ge=0.0, le=1.0, description="Coherence score")
+    readability_score: Union[float, None] = Field(None, ge=0.0, le=10.0, description="Readability score")
+    coherence_score: Union[float, None] = Field(None, ge=0.0, le=1.0, description="Coherence score")
 
     @validator('summary_points')
     def validate_summary_points(cls, v):
@@ -138,7 +138,7 @@ class EnhancedProcessedArticle(BaseModel):
     fallback_used: bool = Field(default=False, description="Whether fallback was used")
 
     # Enhanced features
-    topic_cluster: str | None = Field(None, description="Topic cluster assignment")
+    topic_cluster: Union[str, None] = Field(None, description="Topic cluster assignment")
     citation_count: int = Field(default=0, ge=0, description="Number of citations")
     related_article_count: int = Field(default=0, ge=0, description="Number of related articles")
 
@@ -167,8 +167,8 @@ class ProcessingTelemetry(BaseModel):
     processing_id: str = Field(..., description="Unique processing run ID")
     stage: ProcessingStage = Field(..., description="Processing stage")
     start_time: datetime = Field(..., description="Stage start time")
-    end_time: datetime | None = Field(None, description="Stage end time")
-    duration_seconds: float | None = Field(None, ge=0.0, description="Stage duration")
+    end_time: Union[datetime, None] = Field(None, description="Stage end time")
+    duration_seconds: Union[float, None] = Field(None, ge=0.0, description="Stage duration")
 
     # Input/output metrics
     input_count: int = Field(..., ge=0, description="Number of input items")
@@ -182,7 +182,7 @@ class ProcessingTelemetry(BaseModel):
     cost_usd: float = Field(default=0.0, ge=0.0, description="Estimated cost in USD")
 
     # Quality metrics
-    average_quality_score: float | None = Field(None, ge=0.0, le=1.0)
+    average_quality_score: Union[float, None] = Field(None, ge=0.0, le=1.0)
     quality_distribution: dict[QualityLevel, int] = Field(default_factory=dict)
 
     # Error details
@@ -321,7 +321,7 @@ DEFAULT_VALIDATION_RULES = [
     ValidationRule(
         rule_id="proper_ending",
         rule_type="regex",
-        pattern=r'(です|ます|した|きます|。)$',
+        pattern=r'(?:です|ます|した|きます|。)$',
         severity="warning",
         message="Summary should end with proper Japanese ending"
     ),
@@ -354,4 +354,4 @@ class ValidationViolation(BaseModel):
     rule_id: str
     severity: Severity = Severity.ERROR
     message: str
-    suggestion: str | None = None
+    suggestion: Union[str, None] = None

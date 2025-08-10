@@ -10,7 +10,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 
 # Optional dependencies
 try:
@@ -34,7 +34,7 @@ except ImportError:
 
 try:
     from src.utils.logger import setup_logging
-    from src.utils.text_processing import remove_duplicate_patterns
+    from src.utils.text_processing import remove_duplicate_patterns, fix_inappropriate_period_insertions, fix_particle_duplication
     logger = setup_logging()
     HAS_LOGGER = True
 except ImportError:
@@ -113,6 +113,8 @@ class NewsletterGenerator:
                 autoescape=False,  # We want raw markdown
                 trim_blocks=False,
                 lstrip_blocks=False,
+                auto_reload=True,
+                cache_size=0,
             )
             # Add custom filters
             self.jinja_env.filters['regex_replace'] = self._regex_replace_filter
@@ -157,8 +159,8 @@ class NewsletterGenerator:
             )
 
         # Apply quality filtering with dynamic threshold adjustment for article count assurance
-        min_articles_target = 10  # F-5要件準拠: 上位10件まで本文整形
-        max_articles_target = 10  # 上限を10本に拡大
+        min_articles_target = 7   # IMPROVED: 記事数を7-8記事に制限（品質重視）
+        max_articles_target = 8   # IMPROVED: 上限を8記事に制限（読みやすさ重視）
 
         # [CRITICAL FIX] Apply context analysis FIRST, then consolidate multi-source articles
         # This ensures that workflow-provided clustering data (_multi_articles_tmp) is properly processed
@@ -229,6 +231,17 @@ class NewsletterGenerator:
             if len(emergency_deduped) > len(filtered_articles):
                 filtered_articles = emergency_deduped
                 quality_threshold = emergency_threshold
+
+        # IMPROVED: Limit articles to max_articles_target if we have too many
+        if len(filtered_articles) > max_articles_target:
+            # Sort by quality score (if available) or keep original order
+            filtered_articles = filtered_articles[:max_articles_target]
+            if HAS_LOGGER:
+                logger.info(
+                    "Limited articles to maximum target",
+                    limited_count=len(filtered_articles),
+                    max_target=max_articles_target
+                )
 
         if HAS_LOGGER:
             logger.info(
@@ -301,42 +314,10 @@ class NewsletterGenerator:
             raw_title_has_emoji = '🆙' in article.summarized_article.filtered_article.raw_article.title
             is_update_article = has_update_flag or raw_title_has_emoji
 
-            # Pass update context to title generation for integrated processing
-            article.japanese_title = await self._generate_article_title_integrated(
-                article, is_update=is_update_article
-            )
+            # Store update context for later batch processing
+            article._temp_is_update = is_update_article
 
-            # Fallback for failed title generation to prevent article loss
-            if not article.japanese_title:
-                raw_title = article.summarized_article.filtered_article.raw_article.title
-                logger.warning(
-                    "Integrated title generation failed, using fallback",
-                    article_id=article.summarized_article.filtered_article.raw_article.id
-                )
-                # Apply integrated fallback logic
-                if is_update_article:
-                    # Remove redundant 【続報】 and add 🆙 if needed
-                    clean_title = re.sub(r'【?続報】?[:：]?\s*', '', raw_title)
-                    article.japanese_title = f"{clean_title}🆙" if '🆙' not in clean_title else clean_title
-                else:
-                    article.japanese_title = raw_title
-
-            # Log the integrated title generation result
-            if is_update_article:
-                logger.info(
-                    "Integrated UPDATE title generation completed",
-                    article_id=article.summarized_article.filtered_article.raw_article.id,
-                    final_title=article.japanese_title,
-                    has_update_flag=has_update_flag,
-                    raw_title_has_emoji=raw_title_has_emoji
-                )
-
-            # Normalize terminology in Japanese title
-            if article.japanese_title:
-                # Clean any remaining hash marks (safety measure for double hash issue)
-                article.japanese_title = re.sub(r'^[#\s]*["\'「]|["\'」]+$', '', article.japanese_title).strip()
-                article.japanese_title = re.sub(r'^#+\s*', '', article.japanese_title)
-                article.japanese_title = self._normalize_terminology(article.japanese_title)
+            # Title generation moved to batch processing after this loop
             if (article.summarized_article and
                 article.summarized_article.summary and
                 article.summarized_article.summary.summary_points):
@@ -355,9 +336,12 @@ class NewsletterGenerator:
                 # Note: Removed _shorten_summary_points to preserve bullet content integrity per Lawrence's feedback
             return article
 
-        # Process all articles in parallel for title generation and cleanup
+        # Process all articles in parallel for cleanup (title generation moved to batch processing below)
         tasks = [process_single_article(article) for article in filtered_articles]
         filtered_articles = await asyncio.gather(*tasks)
+        
+        # Batch Title Processing (Phase 3.2c optimization)
+        await self._process_titles_in_batches(filtered_articles)
 
         # New Step: Generate Japanese summaries for all secondary citations in parallel
         citation_generator = CitationGenerator(self.llm_router)
@@ -370,6 +354,35 @@ class NewsletterGenerator:
             logger.info(f"Generating Japanese summaries for {len(all_citations_to_summarize)} secondary citations...")
             await citation_generator.generate_summaries_for_citations(all_citations_to_summarize)
             logger.info("Finished generating summaries for secondary citations.")
+
+        # Global citation uniqueness and Japanese summary enforcement (improve JP ratio and diversity)
+        from urllib.parse import urlparse, urlunparse
+
+        def _normalize_url_global(u: str) -> str:
+            try:
+                p = urlparse(str(u))
+                return urlunparse((p.scheme.lower() or 'https', p.netloc.lower(), p.path.rstrip('/'), '', '', ''))
+            except Exception:
+                return str(u)
+
+        seen_global_urls: set[str] = set()
+        for article in filtered_articles:
+            if not getattr(article, 'citations', None):
+                continue
+            unique: list = []
+            for c in article.citations:
+                if not getattr(c, 'japanese_summary', None):
+                    continue
+                norm = _normalize_url_global(getattr(c, 'url', ''))
+                if not norm or norm in seen_global_urls:
+                    continue
+                seen_global_urls.add(norm)
+                unique.append(c)
+            # Limit to at most 1 citation per article to reduce URL footprint
+            article.citations = unique[:1]
+
+        # Generate lead text after all articles are processed
+        lead_text = await self._generate_lead_text(filtered_articles, edition)
 
         # Prepare template context
         context = {
@@ -526,9 +539,6 @@ class NewsletterGenerator:
                 )
 
         logger.info(f"F-16 UPDATE article verification: {update_count_check} articles processed with integrated title generation")
-
-        # Generate lead text after all articles are processed
-        lead_text = await self._generate_lead_text(filtered_articles, edition)
 
         # Create newsletter output
         newsletter_output = NewsletterOutput(
@@ -979,7 +989,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
                 return False, f"不完全な文: {reason}"
 
         # 重複表現のチェック
-        if re.search(r'(されています|しています).*?(と発表|と報告|と説明)', paragraph):
+        if re.search(r'(?:されています|しています).*?(?:と発表|と報告|と説明)', paragraph):
             return False, "重複表現（〜していますと発表）"
 
         # 文の長さチェック
@@ -1198,14 +1208,14 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
         # 3. Fix overly long sentences (split at logical points)
         if len(para) > 120:
             # Split at conjunctions but keep them
-            para = re.sub(r'([^\s。！？])(また|さらに|一方|なお|ただし|しかし)', r'\1。\2', para)
+            para = re.sub(r'([^\s。！？])((?:また|さらに)|(?:一方|なお)|(?:ただし|しかし))', r'\1。\2', para)
 
         # 4. Remove incomplete sentence patterns
         para = re.sub(r'([A-Za-z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+)が。\s*', '', para)
         para = re.sub(r'([A-Za-z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+)は。\s*', '', para)
 
         # 5. Fix missing particles before nouns
-        para = re.sub(r'([、。])([A-Z][a-z]+)([が|は|を|に|で|と])', r'\1\2\3', para)
+        para = re.sub(r'([、。])([A-Z][a-z]+)((?:が|は|を|に|で|と))', r'\1\2\3', para)
         para = re.sub(r'([A-Za-z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+)を。\s*', '', para)
 
         # Fix broken sentence connections
@@ -1494,7 +1504,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
             if companies:
                 company = companies[0]
                 # Remove company name and particles from the action
-                action = re.sub(rf'{re.escape(company)}(?:が|は|の)?', '', action).strip()
+                action = re.sub(rf'{re.escape(company)}(?:(?:が|は)|の)?', '', action).strip()
 
             if metrics:
                 metric = metrics[0]
@@ -1553,8 +1563,8 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
             r'(Claude(?:-\d+)?)',
             r'(Gemini(?:\s+\d+\.\d+)?)',
             r'(LLaMA|Llama)',
-            r'(DALL-E|DALL·E)',
-            r'(Midjourney|Stable Diffusion)',
+            r'(DALL-(?:E|DALL)·E)',
+            r'((?:Midjourney|Stable) Diffusion)',
             r'(TensorFlow|PyTorch)',
             r'(Transformer|BERT|T5)'
         ]
@@ -1573,7 +1583,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
             # Extract action part after company name, avoiding full sentence capture
             r'(?:が|は)([^。]*?(?:発表|リリース|公開|開始|導入|実装|展開|提供))',
             r'(?:が|は)([^。]*?(?:向上|改善|強化|拡大|増大|倍増))',
-            r'(?:が|は)([^。]*?(?:値下げ|価格.*?削減|コスト.*?削減))',
+            r'(?:が|は)([^。]*?(?:値下げ|価格).*?(?:削減|コスト).*?削減)',
             r'(?:が|は)([^。]*?(?:新機能|新サービス|新製品|新技術))',
             # Fallback: extract just the action verb and immediate context
             r'((?:\d+[%倍億ドル]*.*?)?(?:発表|リリース|公開|開始|導入))',
@@ -1704,7 +1714,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
         sorted_themes = sorted(theme_counts.items(), key=lambda x: x[1], reverse=True)
         return [theme for theme, count in sorted_themes[:3] if count > 0]
 
-    def _generate_specific_theme_title(self, themes: list[str], articles: list[ProcessedArticle]) -> str | None:
+    def _generate_specific_theme_title(self, themes: list[str], articles: list[ProcessedArticle]) -> Union[str, None]:
         """具体的なテーマタイトルを生成（汎用表現を回避）"""
         try:
             # 記事から具体的な企業名・技術名を抽出
@@ -1896,9 +1906,13 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
 
         # Clean hash marks that might leak into title (Fix for PRD F-5)
         text = re.sub(r'^#+\s*', '', text.strip())
+        
+        # CRITICAL FIX: Apply text processing fixes before truncation
+        text = fix_inappropriate_period_insertions(text)
+        text = fix_particle_duplication(text)
 
         # For TOC, we want to show meaningful content but avoid extremely long entries
-        max_toc_length = 80  # Optimal length for TOC entries
+        max_toc_length = 90  # Increased from 80 to reduce aggressive truncation
 
         # If text is already short enough, return as is
         if len(text) <= max_toc_length:
@@ -1914,93 +1928,189 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
             quote_end = quote_match.end()
 
             # If the quote appears early enough, try to include it
-            if quote_end <= max_toc_length + 10:  # Allow slight overflow for quotes
+            if quote_end <= max_toc_length + 15:  # Allow more overflow for quotes
                 # Find a good cut point after the quote
                 cut_text = text[:quote_end]
 
                 # Look for natural break points after the quote
                 remaining = text[quote_end:]
-                for break_char in ['を', 'が', 'に', 'で', 'と']:
+                for break_char in ['を', 'が', 'に', 'で', 'と', 'から', 'まで', 'より']:
                     break_pos = remaining.find(break_char)
-                    if break_pos != -1 and break_pos < 10:
+                    if break_pos != -1 and break_pos < 15:
                         cut_text = text[:quote_end + break_pos + 1]
-                        if len(cut_text) <= max_toc_length + 5:
-                            return cut_text.rstrip() + '…'
+                        if len(cut_text) <= max_toc_length + 10:
+                            return cut_text.rstrip()
                         break
 
                 # If we can fit the quote, use it
-                if len(cut_text) <= max_toc_length + 10:
-                    return cut_text.rstrip() + '…'
+                if len(cut_text) <= max_toc_length + 15:
+                    return cut_text.rstrip()
 
-        # For very long text, try to find natural breaking points
-        if len(text) > 120:
-            # Look for early natural breaks
-            early_break_patterns = [
-                (r'において', '、'),
-                (r'について', '、'),
-                (r'に関して', '、'),
-                (r'による', ''),
-                (r'のための', ''),
-                (r'を通じて', ''),
-                (r'における', ''),
-            ]
-
-            for keyword, suffix in early_break_patterns:
-                pattern = keyword + suffix
-                match_pos = text.find(pattern)
-                if match_pos != -1 and 20 <= match_pos <= 60:
-                    # Cut after the pattern
-                    cut_pos = match_pos + len(pattern)
-                    return text[:cut_pos].rstrip() + '…'
-
-        # Look for good breaking points within the limit
-        snippet = text[:max_toc_length]
-
-        # Priority: complete phrases or natural boundaries
-        # 1. Try to break at punctuation
-        for punct in ['、', '。', '・']:
-            last_punct = snippet.rfind(punct)
-            if last_punct > max_toc_length * 0.6:  # At least 60% of target length
-                return snippet[:last_punct + 1].rstrip()
-
-        # 2. Try to break after particles (but not certain ones that need completion)
-        safe_particles = ['で', 'から', 'まで', 'より', 'にて']
-        for particle in safe_particles:
-            last_pos = snippet.rfind(particle)
-            if last_pos > max_toc_length * 0.6:
-                return snippet[:last_pos + len(particle)].rstrip() + '…'
-
-        # 3. Avoid breaking in the middle of important terms
-        # Find the last "safe" position (not in the middle of a word/term)
-        safe_pos = max_toc_length
-        while safe_pos > max_toc_length * 0.7:
-            char = text[safe_pos - 1] if safe_pos > 0 else ''
-            next_char = text[safe_pos] if safe_pos < len(text) else ''
-
-            # Don't break in the middle of:
-            # - ASCII words
-            # - Katakana words
-            # - Numbers
-            if (char.isascii() and char.isalnum() and next_char.isascii() and next_char.isalnum()) or \
-               (ord('ァ') <= ord(char) <= ord('ヶ') and ord('ァ') <= ord(next_char) <= ord('ヶ')) or \
-               (char.isdigit() and next_char.isdigit()):
-                safe_pos -= 1
-                continue
-            else:
-                break
-
-        # Use the safe position
-        result = text[:safe_pos].rstrip()
-
+        # Use the improved sentence completion function for better truncation
+        result = ensure_sentence_completeness(text, max_toc_length)
+        
         # Clean up any trailing particles that make it incomplete
-        if result.endswith(('は', 'が', 'を', 'に', 'へ', 'と')):
+        if result.endswith(('は', 'が', 'を', 'に', 'へ', 'と', 'から', 'まで', 'より')):
             result = result[:-1].rstrip()
 
-        # Add ellipsis if we actually truncated
-        if len(result) < len(text):
+        # Only add ellipsis if we actually truncated and don't already have proper ending
+        if len(result) < len(text) and not result.endswith(('。', '！', '？', '…')):
             result += '…'
 
         return result
+
+    async def _process_titles_in_batches(self, articles: list[ProcessedArticle]) -> None:
+        """
+        Process titles in batches for improved performance (Phase 3.2c optimization).
+        
+        This method processes article titles using batch LLM processing to significantly
+        reduce API call overhead and improve overall performance.
+        
+        Args:
+            articles: List of ProcessedArticle objects to generate titles for
+        """
+        if not articles:
+            return
+            
+        logger.info(f"Starting batch title processing for {len(articles)} articles")
+        
+        # Check if batch processing is enabled
+        if not self.settings.processing.enable_llm_batch_processing or not self.llm_router:
+            logger.info("Batch title processing disabled, using individual processing")
+            await self._process_titles_individually(articles)
+            return
+        
+        try:
+            # Generate titles using batch processing
+            batch_titles = await self.llm_router.generate_titles_batch(
+                articles=articles,
+                batch_size=self.settings.processing.llm_batch_size,
+                max_concurrent_batches=self.settings.processing.max_concurrent_llm_batches
+            )
+            
+            # Assign titles to articles with fallback handling
+            successful_titles = 0
+            for i, (article, title) in enumerate(zip(articles, batch_titles)):
+                if title:
+                    # Apply normalization to batch-generated titles
+                    article.japanese_title = self._normalize_and_clean_title(title)
+                    successful_titles += 1
+                else:
+                    # Fallback to individual processing for failed titles
+                    try:
+                        is_update = getattr(article, '_temp_is_update', False)
+                        article.japanese_title = await self._generate_article_title_integrated(
+                            article, is_update=is_update
+                        )
+                        if article.japanese_title:
+                            article.japanese_title = self._normalize_and_clean_title(article.japanese_title)
+                            successful_titles += 1
+                    except Exception as e:
+                        logger.error(f"Individual title fallback failed for article {i}: {e}")
+                        # Ultimate fallback to raw title
+                        article.japanese_title = self._generate_fallback_title(article)
+                        successful_titles += 1
+                
+                # Clean up temporary attribute
+                if hasattr(article, '_temp_is_update'):
+                    delattr(article, '_temp_is_update')
+            
+            success_rate = (successful_titles / len(articles)) * 100
+            logger.info(
+                f"Batch title processing completed: {successful_titles}/{len(articles)} titles generated "
+                f"({success_rate:.1f}% success rate)"
+            )
+            
+        except Exception as e:
+            logger.error(f"Batch title processing failed, falling back to individual processing: {e}")
+            await self._process_titles_individually(articles)
+
+    async def _process_titles_individually(self, articles: list[ProcessedArticle]) -> None:
+        """
+        Fallback method to process titles individually when batch processing fails.
+        
+        Args:
+            articles: List of ProcessedArticle objects to generate titles for
+        """
+        logger.info(f"Processing {len(articles)} titles individually")
+        
+        successful_titles = 0
+        for i, article in enumerate(articles):
+            try:
+                is_update = getattr(article, '_temp_is_update', False)
+                article.japanese_title = await self._generate_article_title_integrated(
+                    article, is_update=is_update
+                )
+                if article.japanese_title:
+                    article.japanese_title = self._normalize_and_clean_title(article.japanese_title)
+                    successful_titles += 1
+                else:
+                    # Ultimate fallback
+                    article.japanese_title = self._generate_fallback_title(article)
+                    successful_titles += 1
+                    
+            except Exception as e:
+                logger.error(f"Individual title processing failed for article {i}: {e}")
+                # Ultimate fallback to raw title
+                article.japanese_title = self._generate_fallback_title(article)
+                successful_titles += 1
+            finally:
+                # Clean up temporary attribute
+                if hasattr(article, '_temp_is_update'):
+                    delattr(article, '_temp_is_update')
+        
+        success_rate = (successful_titles / len(articles)) * 100
+        logger.info(
+            f"Individual title processing completed: {successful_titles}/{len(articles)} titles generated "
+            f"({success_rate:.1f}% success rate)"
+        )
+
+    def _generate_fallback_title(self, article: ProcessedArticle) -> str:
+        """
+        Generate a fallback title when all other methods fail.
+        
+        Args:
+            article: ProcessedArticle object
+            
+        Returns:
+            A fallback title string
+        """
+        try:
+            raw_title = article.summarized_article.filtered_article.raw_article.title
+            is_update = getattr(article, '_temp_is_update', False)
+            
+            if is_update:
+                # Remove redundant 【続報】 and add 🆙 if needed
+                clean_title = re.sub(r'【?続報】?[:：]?\s*', '', raw_title)
+                return f"🆙 {clean_title}" if '🆙' not in clean_title else clean_title
+            else:
+                return raw_title
+                
+        except Exception as e:
+            logger.error(f"Fallback title generation failed: {e}")
+            return "AI技術ニュース"  # Ultimate fallback
+
+    def _normalize_and_clean_title(self, title: str) -> str:
+        """
+        Normalize and clean a generated title.
+        
+        Args:
+            title: Raw title to normalize
+            
+        Returns:
+            Cleaned and normalized title
+        """
+        if not title:
+            return title
+            
+        # Clean any remaining hash marks (safety measure for double hash issue)
+        title = re.sub(r'^[#\s]*["\'「]|["\'」]+$', '', title).strip()
+        title = re.sub(r'^#+\s*', '', title)
+        
+        # Apply terminology normalization
+        title = self._normalize_terminology(title)
+        
+        return title
 
     async def _generate_article_title_integrated(
         self,
@@ -2052,7 +2162,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
         # Check 1: Duplicate word patterns
         duplicate_patterns = [
             (r'(\w+)\s+\1\b', '同じ単語が連続しています'),
-            (r'(LLM|AI|GPT)の技術.*?\1', 'LLM/AI用語の重複があります'),
+            (r'((?:LLM|AI)|GPT)の技術.*?\1', 'LLM/AI用語の重複があります'),
             (r'(\w+)技術\s*\1', '技術用語の重複があります')
         ]
 
@@ -2131,7 +2241,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
 
         # Fix duplicate patterns
         improved_title = re.sub(r'(\w+)\s+\1\b', r'\1', improved_title)
-        improved_title = re.sub(r'(LLM|AI|GPT)(の技術).*?\1', r'\1\2', improved_title)
+        improved_title = re.sub(r'((?:LLM|AI)|GPT)(の技術).*?\1', r'\1\2', improved_title)
         improved_title = re.sub(r'(\w+)技術\s*\1', r'\1技術', improved_title)
 
         # Remove trailing ellipsis and try to complete
@@ -2212,31 +2322,30 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
 
                 # Extract key entities and actions - 拡張版
                 company_match = re.search(
-                    r'(OpenAI|Google|Meta|Microsoft|Anthropic|Apple|Amazon|NVIDIA|DeepMind|Agentica|Together AI|'
-                    r'Hugging Face|TechCrunch|VentureBeat|WIRED|IEEE|NextWord|SemiAnalysis|'
+                    r'(OpenAI|Google|Meta|Microsoft|Anthropic|Apple|Amazon|NVIDIA|DeepMind|Agentica|Together AI|Hugging Face|TechCrunch|VentureBeat|WIRED|IEEE|NextWord|SemiAnalysis|'
                     r'[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*?)(?:社|が|は|の|、)',
                     first_point
                 )
                 company = company_match.group(1) if company_match else None
 
                 # 数値・成果の抽出強化
-                numbers_match = re.search(r'(\d+(?:\.\d+)?[%万億円ドル倍件名]|Pass@1\s+\d+\.\d+%|SOTA|年間\d+万ドル)', first_point)
+                numbers_match = re.search(r'(\d+(?:\.\d+)?[%万億円ドル倍件名]|Pass@1\s+\d+\.\d+%|(?:SOTA|年間)\d+万ドル)', first_point)
                 numbers = numbers_match.group(1) if numbers_match else None
 
                 # Pattern matching for key actions/technologies - 拡張版
                 action_patterns = [
-                    (r'(DeepSWE-Preview|コーディングエージェント)', 'AI開発ツール'),
+                    (r'(DeepSWE-(?:Preview|コーディングエージェント))', 'AI開発ツール'),
                     (r'(強化学習|RL|GRPO\+\+|rLLM)', '機械学習技術'),
                     (r'(Pass@1\s+\d+\.\d+%|SOTA|ベンチマーク)', '性能指標'),
-                    (r'(SWE-Bench|Qwen3-32B)', 'AI基盤'),
-                    (r'(年間\d+万ドル|収益|売上|投資)', '事業展開'),
+                    (r'(SWE-(?:Bench|Qwen3)-32B)', 'AI基盤'),
+                    (r'(年間\d+(?:万ドル|収益)|売上|投資)', '事業展開'),
                     (r'(コンサルティング|サービス拡大)', 'ビジネス'),
                     (r'(\d+名?の?(?:AI)?研究者)', '研究者'),
                     (r'(トップ.*?研究者)', '人材'),
                     (r'(新機能|新サービス|新技術)', 'リリース'),
                     (r'(発表|公開|開始|導入|獲得|雇用)', None),
                     (r'(ChatGPT|Claude|Gemini|GPT-\d+)', 'AI'),
-                    (r'(Deep Research|RAG|LLM)', '技術'),
+                    (r'(Deep (?:Research|RAG)|LLM)', '技術'),
                 ]
 
                 key_action = None
@@ -2335,20 +2444,20 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
             logger.debug(f"Centralized duplicate removal failed: {e}")
 
         # Remove duplicate phrases and concatenation errors first
-        title = re.sub(r'(.+?)(と発表|と報告|と述べ|と語っ|と表明)(.*?)\2', r'\1\2\3', title)
+        title = re.sub(r'(.+?)((?:と発表|と報告|と述べ|と語っ|と表明))(.*?)\2', r'\1\2\3', title)
         # Fix duplicate company/product names (e.g., "Claude CodeAI Claude" -> "Claude Code") - more conservative
-        title = re.sub(r'\b(\w+)\s+(AI|Code|Pro|Plus)\s+\1\b', r'\1 \2', title)
-        title = re.sub(r'\b(\w+)(AI|Code|Pro|Plus)\1\b', r'\1\2', title)
+        title = re.sub(r'\b(\w+)\s+((?:AI|Code|Pro|Plus))\s+\1\b', r'\1 \2', title)
+        title = re.sub(r'\b(\w+)((?:AI|Code|Pro|Plus))\1\b', r'\1\2', title)
         # Fix duplicate adjacent words
         title = re.sub(r'(\b\w+)\s+\1\b', r'\1', title)
 
         # Legacy patterns - kept for additional coverage beyond centralized patterns
         # Pattern 9: Specific numeric/text duplicates like "年間1000万ドルで年間1000万ドル"
-        title = re.sub(r'(年間\d+[万億千]?[ドル円])(で|を|が|は)\1', r'\1', title)
-        title = re.sub(r'(\d+[万億千]?[ドル円])(で|を|が|は)\1', r'\1', title)
+        title = re.sub(r'(年間\d+[万億千]?[ドル円])((?:で|を|が|は))\1', r'\1', title)
+        title = re.sub(r'(\d+[万億千]?[ドル円])((?:で|を|が|は))\1', r'\1', title)
         # Pattern 10: More specific duplicates with currencies and numbers
-        title = re.sub(r'(\d+万ドル)(で|を|が|は)(\d+万ドル)', r'\1', title)
-        title = re.sub(r'(年間\d+万ドル)(で|を|が|は)(年間\d+万ドル)', r'\1', title)
+        title = re.sub(r'(\d+万ドル)((?:で|を|が|は))(\d+万ドル)', r'\1', title)
+        title = re.sub(r'(年間\d+万ドル)((?:で|を|が|は))(年間\d+万ドル)', r'\1', title)
 
         # Debug logging for title cleaning (can be removed in production)
         if '年間' in title and '万ドル' in title:
@@ -2356,11 +2465,11 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
 
         # Remove verb endings like "〜と報じられました" or "〜と発表しました"
         # to ensure the title is a proper headline (体言止め).
-        verb_endings_pattern = r"(?:と報じられました|と発表しました|と述べました|と語りました|と表明しました|と明らかにしました|氏は|氏は、|を発表|を報告)$"
+        verb_endings_pattern = r"(?:(?:と報じられました|と発表しました)|(?:と述べました|と語りました)|(?:と表明しました|と明らかにしました)|(?:氏は、|氏は，)|(?:を発表|を報告))$"
         cleaned_title = re.sub(verb_endings_pattern, '', title).strip()
 
         # Remove incomplete sentence patterns
-        incomplete_patterns = r"(?:について|に関して|において|に対して|をめぐって)$"
+        incomplete_patterns = r"(?:(?:について|に関して)|(?:において|に対して)|をめぐって)$"
         cleaned_title = re.sub(incomplete_patterns, '', cleaned_title).strip()
 
         # Additional cleanup for cases where a comma is left at the end
@@ -2619,7 +2728,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
                 # Improved extraction with better logic
                 # Extract company name from summary
                 company_patterns = [
-                    r'([A-Za-z][A-Za-z0-9]*(?:\\s+[A-Za-z][A-Za-z0-9]*)*?)(?:社|が|は|の).{0,20}?(発表|開始|提供|リリース|公開)',
+                    r'([A-Za-z][A-Za-z0-9]*(?:\\s+[A-Za-z][A-Za-z0-9]*)*?)(?:Union[社, が]|Union[は, の]).{0,20}?(Union[発表, 開始]|Union[提供, リリース]|公開)',
                     r'(OpenAI|Meta|Google|Microsoft|Anthropic|Apple|Amazon|Tesla|NVIDIA|AMD)(?:社|が|は|の)?',
                     r'([A-Za-z]+)(?:社|が|は|の).*?(AI|人工知能|機械学習|ディープラーニング)'
                 ]
@@ -2633,10 +2742,10 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
 
                 # Extract key action/technology
                 tech_action_patterns = [
-                    r'(AGI|ChatGPT|Claude|Gemini|GPT-\\d+|Llama|LLaMA)(?:の|を|が)?(.{0,15}?)(?:発表|リリース|公開|開発)',
-                    r'(?:AI|人工知能|機械学習)(?:の|を|が)?(.{0,15}?)(?:発表|開発|導入|活用)',
-                    r'(量子|法的|医療|自動化)(?:の|を|が)?(.{0,10}?)(?:技術|システム|プラットフォーム|ソリューション)',
-                    r'(著作権|訴訟|契約|投資|買収|提携)(?:の|を|が)?(.{0,10}?)(?:問題|合意|発表)'
+                    r'(?:AGI|ChatGPT|Claude|Gemini|GPT-\\d+|Llama|LLaMA)(?:(?:の|を)|が)?(.{0,15}?)(?:発表|リリース|公開|開発)',
+                    r'(?:AI|人工知能|機械学習)(?:(?:の|を)|が)?(.{0,15}?)(?:発表|開発|導入|活用)',
+                    r'(?:量子|法的|医療|自動化)(?:(?:の|を)|が)?(.{0,10}?)(?:技術|システム|プラットフォーム|ソリューション)',
+                    r'(?:著作権|訴訟|契約|投資|買収|提携)(?:(?:の|を)|が)?(.{0,10}?)(?:問題|合意|発表)'
                 ]
 
                 tech_action = None
@@ -2664,7 +2773,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
                         title_candidate = "AI関連ニュース"
 
                 # Clean up redundant phrases
-                title_candidate = re.sub(r'しましたを(発表|開始|提供)', r'を\\1', title_candidate)
+                title_candidate = re.sub(r'しましたを((?:発表|開始)|提供)', r'を\\1', title_candidate)
                 title_candidate = re.sub(r'がしました', 'が', title_candidate)
                 title_candidate = re.sub(r'\\s+', ' ', title_candidate).strip()
 
@@ -2723,7 +2832,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
             logger.warning(f"Template title generation failed: {e}")
             return "AI技術の最新発表"
 
-    def _extract_key_topic_from_summary(self, summary_point: str) -> str | None:
+    def _extract_key_topic_from_summary(self, summary_point: str) -> Union[str, None]:
         """
         Extract key topic/action from a summary point for title generation.
 
@@ -2755,7 +2864,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
             if match:
                 topic = match.group(1).strip()
                 # Clean up common prefixes
-                topic = re.sub(r'^(新しい|最新の|次世代の)', '', topic)
+                topic = re.sub(r'^((?:新しい|最新の)|次世代の)', '', topic)
                 if len(topic) >= 5:  # Ensure meaningful length
                     return topic
 
@@ -3136,13 +3245,13 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
         redundant_patterns = [
             (r'この記事では[、]?', ''),
             (r'記事では[、]?', ''),
-            (r'(?:記事|内容)によると[、]?', ''),
+            (r'(?:(?:記事|内容))によると[、]?', ''),
             (r'記事の著者は[、]?', ''),
             (r'記事の中で[、]?', ''),
             (r'について言及[しされ](?:て(?:い)?ます?)?[、。]?', 'を発表'),
             (r'について触れて(?:い)?ます?[、。]?', 'を説明'),
-            (r'に(?:ついて|関して)詳しく(?:述べ|説明)[しされ](?:て(?:い)?ます?)?[、。]?', 'を詳述'),
-            (r'(?:上記|以下)の[、]?', ''),
+            (r'に(?:(?:ついて|関して))詳しく(?:(?:述べ|説明))[しされ](?:て(?:い)?ます?)?[、。]?', 'を詳述'),
+            (r'(?:(?:上記|以下))の[、]?', ''),
             (r'提供された情報[によると]?[、]?', ''),
             (r'記事内容[はで][、]?', ''),
         ]
@@ -3152,12 +3261,12 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
 
         # 2. Remove negative/uncertain expressions
         negative_patterns = [
-            (r'(?:記事内容|情報)は断片的で[、]?', ''),
-            (r'具体的な(?:説明|内容|詳細)(?:は)?(?:ありません|不明|なし)[、。]?', ''),
-            (r'詳細(?:は)?(?:不明|明らかでない)[、。]?', ''),
-            (r'情報が(?:少ない|不足)[、。]?', ''),
+            (r'(?:(?:記事内容|情報))は断片的で[、]?', ''),
+            (r'具体的な(?:(?:説明|内容)|詳細)(?:は)?(?:(?:ありません|不明)|なし)[、。]?', ''),
+            (r'詳細(?:は)?(?:(?:不明|明らかでない))[、。]?', ''),
+            (r'情報が(?:(?:少ない|不足))[、。]?', ''),
             (r'不明確な[、]?', ''),
-            (r'(?:はっきりと|明確に)(?:は)?(?:述べられて)?いません[、。]?', ''),
+            (r'(?:(?:はっきりと|明確に))(?:は)?(?:述べられて)?いません[、。]?', ''),
         ]
 
         for pattern, replacement in negative_patterns:
@@ -3165,11 +3274,11 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
 
         # 3. Remove personal name references (but keep company/product names)
         personal_name_patterns = [
-            (r'kzzzm氏?(?:による|が|は|の)?[、]?', ''),
-            (r'kzzzmさん(?:による|が|は|の)?[、]?', ''),
-            (r'(?:著者|筆者|執筆者)(?:の)?(?:kzzzm)?(?:氏|さん)?(?:による|が|は|の)?[、]?', ''),
-            (r'ニック・ターリー氏(?:による|が|は|の)?[、]?', 'OpenAI責任者'),
-            (r'ターリー氏(?:による|が|は|の)?[、]?', 'OpenAI幹部'),
+            (r'kzzzm氏?(?:(?:による|が)|(?:は|の))?[、]?', ''),
+            (r'kzzzmさん(?:(?:による|が)|(?:は|の))?[、]?', ''),
+            (r'(?:(?:著者|筆者)|執筆者)(?:の)?(?:kzzzm)?(?:(?:氏|さん))?(?:(?:による|が)|(?:は|の))?[、]?', ''),
+            (r'ニック・ターリー氏(?:(?:による|が)|(?:は|の))?[、]?', 'OpenAI責任者'),
+            (r'ターリー氏(?:(?:による|が)|(?:は|の))?[、]?', 'OpenAI幹部'),
         ]
 
         for pattern, replacement in personal_name_patterns:
@@ -3210,10 +3319,10 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
         # 5. Improve sentence flow and naturalness
         flow_improvements = [
             # Convert verbose reporting to direct statements
-            (r'(?:と|を)発表(?:し|され)(?:て(?:い)?ます|ました)[、。]?', 'を発表'),
-            (r'(?:と|を)明らか(?:に)?(?:し|され)(?:て(?:い)?ます|ました)[、。]?', 'を明確化'),
-            (r'(?:と|を)説明(?:し|され)(?:て(?:い)?ます|ました)[、。]?', 'を説明'),
-            (r'(?:と|を)報告(?:し|され)(?:て(?:い)?ます|ました)[、。]?', 'を報告'),
+            (r'(?:と|を)発表(?:し|され)(?:て(?:い)?(?:ます|ました))[、。]?', 'を発表'),
+            (r'(?:と|を)明らか(?:に)?(?:し|され)(?:て(?:い)?(?:ます|ました))[、。]?', 'を明確化'),
+            (r'(?:と|を)説明(?:し|され)(?:て(?:い)?(?:ます|ました))[、。]?', 'を説明'),
+            (r'(?:と|を)報告(?:し|され)(?:て(?:い)?(?:ます|ました))[、。]?', 'を報告'),
 
             # Remove meta-references
             (r'記事(?:の|では?)[、]?', ''),
@@ -3477,7 +3586,7 @@ def ensure_sentence_completeness(text: str, max_chars: int = None) -> str:
 
         # 4. 接続詞の前（論理構造を保持）
         {
-            'patterns': [r'(?=また|さらに|一方|なお|ただし|しかし|そして)'],
+            'patterns': [r'(?=(?:また|さらに)|(?:一方|なお)|(?:ただし|しかし)|そして)'],
             'include_match': False,
             'min_length_ratio': 0.4,
             'add_ellipsis': True,

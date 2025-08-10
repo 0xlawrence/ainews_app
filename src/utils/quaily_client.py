@@ -35,61 +35,59 @@ from __future__ import annotations
 import json
 import logging
 import os
-import shutil
 import subprocess
 import time
+import unicodedata
 from pathlib import Path
-from typing import Final
+from typing import Union
 
 import requests
 
-logger: Final = logging.getLogger(__name__)
+from src.utils.text_processing import (
+    normalize_unicode_content,
+    safe_encode_for_api,
+    validate_text_for_api,
+    extract_safe_text_for_api
+)
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
+def _normalize_unicode_content(content: str) -> str:
+    """Normalize Unicode content to prevent surrogate pair issues."""
+    return normalize_unicode_content(content)
+
+
 def publish_newsletter(file_path: str, *, edition: str = "daily", dry_run: bool = False) -> dict:
-    """Publish the newsletter Markdown file to Quaily.
-
-    Parameters
-    ----------
-    file_path : str
-        Path to the Markdown file that should be uploaded.
-    edition : str, optional
-        Newsletter edition name (e.g. "daily" or "weekly").  This is forwarded
-        to Quaily so that drafts are organised correctly on their side.
-    dry_run : bool, optional
-        When *True* no external side-effects occur – instead we log and return
-        a *simulated* success response.  This is the default behaviour in the
-        automated test-suite where credentials/CLI are not available.
-
-    Returns
-    -------
-    Dict
-        A dictionary describing the result.  It always contains at minimum a
-        `status` field whose value is one of ``success``, ``failed``,
-        ``skipped`` or ``dry_run``.
     """
+    Publish newsletter to Quaily platform.
+
+    Args:
+        file_path: Path to the markdown file
+        edition: Newsletter edition (daily, weekly, etc.)
+        dry_run: If True, don't actually publish
+
+    Returns:
+        Dict with status and response details
+    """
+    if dry_run:
+        logger.info("[Quaily] Dry run mode - skipping publish")
+        return {"status": "skipped", "reason": "dry_run"}
 
     path = Path(file_path)
-
     if not path.exists():
-        raise FileNotFoundError(f"Newsletter file not found: {path}")
+        logger.error(f"[Quaily] File not found: {path}")
+        return {"status": "failed", "reason": "file_not_found"}
 
     # ------------------------------------------------------------------
-    # Dry-run early exit – no external calls
+    # Primary: CLI-based publish
     # ------------------------------------------------------------------
-    if dry_run:
-        logger.info("[Quaily] Dry-run – skipping publish step", extra={"path": str(path)})
-        _notify_slack(f"📝 (dry-run) Newsletter build finished – output saved to *{path.name}*.")
-        return {"status": "dry_run", "file": str(path)}
+    cli_executable = os.getenv("QUAILY_CLI_PATH")
 
-    # ------------------------------------------------------------------
-    # Try Quaily CLI first – this is the preferred integration method.
-    # ------------------------------------------------------------------
-    cli_executable = shutil.which("quaily")
     if cli_executable:
         logger.info("[Quaily] Using CLI for publish", extra={"path": str(path)})
         try:
@@ -103,7 +101,7 @@ def publish_newsletter(file_path: str, *, edition: str = "daily", dry_run: bool 
             duration = time.time() - start
             logger.info("[Quaily] CLI publish succeeded", extra={"duration_sec": duration})
 
-            resp_payload: dict | str
+            resp_payload: Union[dict, str]
             try:
                 resp_payload = json.loads(completed.stdout)
             except json.JSONDecodeError:
@@ -137,43 +135,74 @@ def publish_newsletter(file_path: str, *, edition: str = "daily", dry_run: bool 
             "Content-Type": "text/markdown; charset=utf-8",
             "User-Agent": "ainews-app/1.0",
         }
+        
+        # Read and process content
         with path.open("r", encoding="utf-8") as fp:
             markdown_content = fp.read()
+        
+        # Validate content before processing
+        is_valid, error_msg = validate_text_for_api(markdown_content)
+        if not is_valid:
+            logger.warning(f"[Quaily] Content validation failed: {error_msg}")
+            # Try to extract safe content
+            markdown_content = extract_safe_text_for_api(markdown_content)
+        
+        # Normalize Unicode content to prevent surrogate pair issues
+        normalized_content = _normalize_unicode_content(markdown_content)
 
-        payload: dict[str, str | None] = {
+        payload: dict[str, Union[str, None]] = {
             "edition": edition,
             "filename": path.name,
         }
 
         start = time.time()
-        resp = requests.post(api_url, params=payload, data=markdown_content.encode("utf-8"), headers=headers, timeout=30)
-        duration = time.time() - start
+        try:
+            # Use safe encoding function
+            encoded_content = safe_encode_for_api(normalized_content)
+            resp = requests.post(api_url, params=payload, data=encoded_content, headers=headers, timeout=30)
+            duration = time.time() - start
 
-        if resp.ok:
-            logger.info("[Quaily] API publish succeeded", extra={"duration_sec": duration})
-            _notify_slack(f"✅ Newsletter *{path.name}* published to Quaily via API ({edition}).")
-            try:
-                body = resp.json()
-            except ValueError:
-                body = resp.text
-            return {
-                "status": "success",
-                "method": "api",
-                "duration_sec": duration,
-                "response": body,
-            }
-        else:
-            logger.error(
-                "[Quaily] API publish failed", extra={"status_code": resp.status_code, "text": resp.text}
-            )
-            _notify_slack(
-                f"🚨 Newsletter *{path.name}* failed to publish – API responded with {resp.status_code}."
-            )
+            if resp.ok:
+                logger.info("[Quaily] API publish succeeded", extra={"duration_sec": duration})
+                _notify_slack(f"✅ Newsletter *{path.name}* published to Quaily via API ({edition}).")
+                try:
+                    body = resp.json()
+                except ValueError:
+                    body = resp.text
+                return {
+                    "status": "success",
+                    "method": "api",
+                    "duration_sec": duration,
+                    "response": body,
+                }
+            else:
+                logger.error(
+                    "[Quaily] API publish failed", extra={"status_code": resp.status_code, "text": resp.text}
+                )
+                _notify_slack(
+                    f"🚨 Newsletter *{path.name}* failed to publish – API responded with {resp.status_code}."
+                )
+                return {
+                    "status": "failed",
+                    "method": "api",
+                    "status_code": resp.status_code,
+                    "text": resp.text,
+                }
+        except UnicodeEncodeError as e:
+            logger.error(f"[Quaily] Unicode encoding error: {e}")
             return {
                 "status": "failed",
                 "method": "api",
-                "status_code": resp.status_code,
-                "text": resp.text,
+                "error": "unicode_encoding_error",
+                "details": str(e)
+            }
+        except Exception as e:
+            logger.error(f"[Quaily] API request error: {e}")
+            return {
+                "status": "failed",
+                "method": "api",
+                "error": "request_error",
+                "details": str(e)
             }
 
     # ------------------------------------------------------------------
@@ -197,7 +226,20 @@ def _notify_slack(message: str) -> None:
         return  # silently ignore – Slack is optional
 
     try:
-        response = requests.post(webhook_url, json={"text": message}, timeout=10)
+        # Normalize message for safe JSON encoding
+        safe_message = normalize_unicode_content(message)
+        
+        # Create payload with safe message
+        payload = {"text": safe_message}
+        
+        # Use safe JSON encoding
+        try:
+            json_payload = json.dumps(payload, ensure_ascii=False)
+        except UnicodeEncodeError:
+            # If Unicode encoding fails, try with error handling
+            json_payload = json.dumps(payload, ensure_ascii=False, default=str)
+        
+        response = requests.post(webhook_url, data=json_payload, headers={"Content-Type": "application/json"}, timeout=10)
         if not response.ok:
             logger.warning(
                 "[Quaily] Slack notification failed", extra={"status_code": response.status_code, "text": response.text}

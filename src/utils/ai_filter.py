@@ -382,8 +382,14 @@ class AIContentFilter:
         else:
             normalized_score = 0.0
 
+        # Apply source quality bonus BEFORE capping to make differences visible,
+        # and add a tiny epsilon based on domain category to break ties
+        epsilon = 0.0001 if source_quality_bonus >= 0.2 else (0.0 if source_quality_bonus == 0.0 else 0.00005)
+        # Reserve headroom for source bonus so high-quality sources outrank others
+        pre_bonus = min(normalized_score, 0.9)
+        final_score = pre_bonus + max(0.0, source_quality_bonus) + epsilon
         # Ensure score is between 0 and 1
-        final_score = max(0.0, min(1.0, normalized_score))
+        final_score = max(0.0, min(1.0, final_score))
 
         # Collect all found keywords
         all_keywords = list(set(high_matches + medium_matches + low_matches))
@@ -541,7 +547,7 @@ class AIContentFilter:
 
 def filter_ai_content(
     articles: list[RawArticle],
-    relevance_threshold: float = 0.01,  # Lowered threshold to 1% to allow legitimate AI articles
+    relevance_threshold: float = 0.20,  # Restored to 20% for AI relevance (F-2 compliance)
     min_articles_target: int = 10,      # PRD-compliant target for 7-10 articles
     dynamic_threshold: bool = True
 ) -> list[FilteredArticle]:

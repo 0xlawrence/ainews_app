@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from functools import wraps
-from typing import Any
+from typing import Any, Union, Callable
 
 from src.utils.logger import setup_logging
 
@@ -44,7 +44,7 @@ class ErrorContext:
     operation: str
     attempt: int
     max_attempts: int
-    last_error: Exception | None
+    last_error: Union[Exception, None]
     start_time: datetime
     total_duration: float
     metadata: dict[str, Any] = field(default_factory=dict)

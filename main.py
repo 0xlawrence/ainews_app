@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import os
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -32,8 +33,44 @@ from src.config.settings import get_settings
 from src.utils.logger import setup_logging
 
 
+def normalize_unicode_for_json(text: str) -> str:
+    """Normalize Unicode text for safe JSON encoding."""
+    if not text:
+        return text
+    
+    try:
+        # Normalize to NFC form
+        normalized = unicodedata.normalize('NFC', text)
+        
+        # Remove surrogate pairs and invalid characters
+        cleaned = ''
+        i = 0
+        while i < len(normalized):
+            char = normalized[i]
+            category = unicodedata.category(char)
+            
+            # Skip surrogate characters
+            if category == 'Cs':
+                i += 1
+                continue
+            
+            # Replace control characters (except newlines and tabs)
+            if category == 'Cc' and char not in '\n\t\r':
+                cleaned += ' '
+                i += 1
+                continue
+            
+            cleaned += char
+            i += 1
+        
+        return cleaned
+    except Exception:
+        # Fallback: return original text if normalization fails
+        return text
+
+
 class CustomJSONEncoder(json.JSONEncoder):
-    """Custom JSON encoder to handle datetime and Pydantic objects."""
+    """Custom JSON encoder to handle datetime and Pydantic objects with Unicode safety."""
     
     def default(self, obj):
         if isinstance(obj, datetime):
@@ -44,17 +81,48 @@ class CustomJSONEncoder(json.JSONEncoder):
                 "timestamp": obj.timestamp.isoformat() if obj.timestamp else None,
                 "stage": obj.stage,
                 "event_type": obj.event_type,
-                "message": obj.message,
+                "message": normalize_unicode_for_json(obj.message) if obj.message else None,
                 "data": obj.data,
                 "duration_seconds": obj.duration_seconds
             }
         elif hasattr(obj, 'model_dump'):
             # Handle Pydantic models
             try:
-                return obj.model_dump()
+                model_data = obj.model_dump()
+                # Recursively normalize Unicode in the model data
+                return self._normalize_dict(model_data)
             except Exception:
                 return str(obj)
         return super().default(obj)
+    
+    def _normalize_dict(self, data):
+        """Recursively normalize Unicode in dictionary data."""
+        if isinstance(data, dict):
+            return {k: self._normalize_value(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._normalize_value(item) for item in data]
+        else:
+            return self._normalize_value(data)
+    
+    def _normalize_value(self, value):
+        """Normalize a single value for JSON encoding."""
+        if isinstance(value, str):
+            return normalize_unicode_for_json(value)
+        elif isinstance(value, dict):
+            return self._normalize_dict(value)
+        elif isinstance(value, list):
+            return [self._normalize_value(item) for item in value]
+        else:
+            return value
+    
+    def encode(self, obj):
+        """Override encode to handle Unicode errors gracefully."""
+        try:
+            return super().encode(obj)
+        except UnicodeEncodeError as e:
+            # If Unicode encoding fails, try with error handling
+            return super().encode(obj, ensure_ascii=False)
+
 
 # ---------------------------------------------------------------------------
 # Load environment variables from .env if present (development convenience)
@@ -235,8 +303,17 @@ async def run_newsletter_workflow(config: NewsletterConfig) -> Dict:
         }
         
         if not config.dry_run:
-            with open(log_file, 'w', encoding='utf-8') as f:
-                json.dump(processing_log, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
+            try:
+                with open(log_file, 'w', encoding='utf-8') as f:
+                    json.dump(processing_log, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
+            except UnicodeEncodeError as e:
+                logger.warning(f"Unicode encoding error in log file, trying with error handling: {e}")
+                # Try with error handling
+                with open(log_file, 'w', encoding='utf-8', errors='replace') as f:
+                    json.dump(processing_log, f, indent=2, ensure_ascii=False, cls=CustomJSONEncoder)
+            except Exception as e:
+                logger.error(f"Failed to save processing log: {e}")
+                # Continue without saving log file
         
         return {
             "status": "success",

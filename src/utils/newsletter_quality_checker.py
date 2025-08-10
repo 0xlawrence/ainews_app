@@ -9,7 +9,7 @@ readability assessment.
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Union
 
 from src.utils.logger import setup_logging
 
@@ -24,7 +24,7 @@ class QualityIssue:
     location: str  # Where the issue was found
     description: str  # What the issue is
     suggestion: str  # How to fix it
-    line_number: int | None = None
+    line_number: Union[int, None] = None
 
 
 @dataclass
@@ -53,7 +53,7 @@ class NewsletterQualityChecker:
                 r'[はがをにでと]。\s*[^。！？]*$',  # Particle followed by incomplete text
             ],
             'redundant_expressions': [
-                r'(されています|しています).*?(と発表|と報告|と説明)',
+                r'(Union[されています, しています]).*?(Union[と発表, と報告]|と説明)',
                 r'発表を発表',
                 r'報告を報告',
                 r'説明を説明',
@@ -63,6 +63,27 @@ class NewsletterQualityChecker:
                 r'と述べました。?$',
                 r'と語りました。?$',
                 r'と報告しました。?$',
+            ],
+            # CRITICAL ENHANCEMENT: Add patterns for period insertion and particle duplication issues
+            'period_insertion_issues': [
+                r'(\d+)。(\u5104|\u4e07|\u5343|\u767e|\u5341)(\u30c9\u30eb|\u5186|\u4eba|\u53f0|\u4ef6|\u793e|\u5e74|\u6708|\u65e5)',  # "1000。億ドル"
+                r'([A-Za-z]+[A-Za-z0-9]*|[\u30A0-\u30FF\u4E00-\u9FAF]+)。([\u306e\u304c\u3092\u306b\u3067\u3068\u306f])',  # "Claude Code。の"
+                r'([\u30A0-\u30FF\u4E00-\u9FAF]+)。([\u30A0-\u30FF\u4E00-\u9FAF]+)',  # "ダッシュボー。ド"
+                r'(\d+\.\d+)。(\u500d|%|\uff05)',  # "5.5。倍"
+            ],
+            'particle_duplication_issues': [
+                r'(\u306b|\u3092|\u304c|\u306f|\u3067|\u3068|\u304b\u3089)(\u304c|\u306f|\u3092|\u306b|\u3067|\u3068|\u304b\u3089)',  # "にが", "をが" etc.
+                r'(\u3066\u304a\u308a|\u3066\u304a\u308a)\u304c',  # "ておりが"
+                r'(\u3066\u3044\u308b)\u304c',  # "ているが"
+                r'(\u307e\u3057\u305f)\u304c',  # "ましたが"
+                r'(\u3067\u3059)\u304c',  # "ですが"
+            ],
+            'title_truncation_issues': [
+                r'[A-Za-z\u30A0-\u30FF\u4E00-\u9FAF]+が$',  # Title ends with "が"
+                r'[A-Za-z\u30A0-\u30FF\u4E00-\u9FAF]+は$',  # Title ends with "は"
+                r'[A-Za-z\u30A0-\u30FF\u4E00-\u9FAF]+を$',  # Title ends with "を"
+                r'[A-Za-z\u30A0-\u30FF\u4E00-\u9FAF]+に$',  # Title ends with "に"
+                r'[A-Za-z\u30A0-\u30FF\u4E00-\u9FAF]+で$',  # Title ends with "で"
             ]
         }
 
@@ -86,6 +107,10 @@ class NewsletterQualityChecker:
         # Parse newsletter sections
         sections = self._parse_newsletter_sections(content)
 
+        # CRITICAL ENHANCEMENT: Check for text processing issues first
+        processing_issues = self._check_text_processing_issues(content)
+        issues.extend(processing_issues)
+        
         # Check each section
         lead_issues, lead_score = await self._check_lead_text(sections.get('lead', ''))
         issues.extend(lead_issues)
@@ -247,6 +272,56 @@ class NewsletterQualityChecker:
                 score -= 0.1
 
         return issues, max(0.0, score)
+
+    def _check_text_processing_issues(self, content: str) -> list[QualityIssue]:
+        """
+        Check for text processing issues like inappropriate period insertion and particle duplication.
+        
+        Args:
+            content: Full newsletter content
+            
+        Returns:
+            List of quality issues found
+        """
+        issues = []
+        
+        # Check for period insertion issues
+        for pattern in self.grammar_patterns['period_insertion_issues']:
+            matches = re.finditer(pattern, content)
+            for match in matches:
+                issues.append(QualityIssue(
+                    severity='critical',
+                    category='grammar',
+                    location='text_processing',
+                    description=f'不適切なピリオド挿入: "{match.group()}"',
+                    suggestion='ピリオドを除去し、自然な文章に修正してください'
+                ))
+                
+        # Check for particle duplication issues
+        for pattern in self.grammar_patterns['particle_duplication_issues']:
+            matches = re.finditer(pattern, content)
+            for match in matches:
+                issues.append(QualityIssue(
+                    severity='critical',
+                    category='grammar',
+                    location='text_processing',
+                    description=f'助詞重複エラー: "{match.group()}"',
+                    suggestion='重複した助詞を除去し、文法的に正しい文に修正してください'
+                ))
+                
+        # Check for title truncation issues
+        for pattern in self.grammar_patterns['title_truncation_issues']:
+            matches = re.finditer(pattern, content)
+            for match in matches:
+                issues.append(QualityIssue(
+                    severity='major',
+                    category='structure',
+                    location='title',
+                    description=f'タイトル切り詰めエラー: "{match.group()}"',
+                    suggestion='タイトルを適切に切り詰めて完全な文にしてください'
+                ))
+                
+        return issues
 
     def _check_table_of_contents(self, toc_content: str) -> tuple[list[QualityIssue], float]:
         """Check table of contents quality."""
