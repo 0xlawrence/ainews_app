@@ -807,6 +807,24 @@ class ContentFormatter:
         if len([line for line in content.split('\n') if line.strip().startswith('- ')]) < 3:
             logger.warning("Very few summary points found in newsletter content")
 
+        # 8. 目次の簡易再生成（重大違反を緩和するための非LLM対処）
+        try:
+            if '### 目次' in content:
+                bullet_count = len([l for l in content.split('\n') if l.strip().startswith('- ')])
+                if bullet_count < 3 and articles:
+                    toc_lines = ['### 目次', '']
+                    visible_articles = [a for a in articles if getattr(a, 'japanese_title', None)]
+                    for i, a in enumerate(visible_articles[:10], 1):
+                        title = a.japanese_title[:45] if len(a.japanese_title) > 45 else a.japanese_title
+                        update_indicator = " 🆙" if getattr(a, 'is_update', False) else ""
+                        toc_lines.append(f"{i}. {title}{update_indicator}")
+                        toc_lines.append("")
+                    new_toc = "\n".join(toc_lines) + "\n\n---"
+                    content = re.sub(r'### 目次[\s\S]*?(?:\n\n|---)', new_toc, content, flags=re.MULTILINE)
+                    fixes_applied.append('toc_regenerated')
+        except Exception:
+            pass
+
         if fixes_applied:
             logger.info(f"Applied content fixes: {', '.join(fixes_applied)}")
 
