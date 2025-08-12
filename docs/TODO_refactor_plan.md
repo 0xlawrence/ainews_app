@@ -85,7 +85,7 @@
 - 作業:
   - ContentValidatorでエラー（禁止/短すぎ/具体性欠如）発生時、LLMで再生成→再検証→NGならフォールバック
   - [実装開始] タイトル: 生成後に検証→改善→フォールバック（`src/newsletter/title_processor.py`）
-  - [未] サマリー: 検証NG時のLLM再生成導線（`src/llm/response_parser.py` 等）
+  - [着手] サマリー: 検証NG時のLLM再生成導線（`src/llm/response_parser.py`）
 - 受け入れ基準:
   - メタ文言/禁止表現検出時は最終出力に残らない
 

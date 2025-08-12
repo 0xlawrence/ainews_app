@@ -2728,7 +2728,7 @@ JSONではなく、上記の形式で日本語の文章を直接生成してく�
                 # Improved extraction with better logic
                 # Extract company name from summary
                 company_patterns = [
-                    r'([A-Za-z][A-Za-z0-9]*(?:\\s+[A-Za-z][A-Za-z0-9]*)*?)(?:Union[社, が]|Union[は, の]).{0,20}?(Union[発表, 開始]|Union[提供, リリース]|公開)',
+                    r'([A-Za-z][A-Za-z0-9]*(?:\\s+[A-Za-z][A-Za-z0-9]*)*?)(?:(?:社|が)|(?:は|の)).{0,20}?(?:発表|開始|提供|リリース|公開)',
                     r'(OpenAI|Meta|Google|Microsoft|Anthropic|Apple|Amazon|Tesla|NVIDIA|AMD)(?:社|が|は|の)?',
                     r'([A-Za-z]+)(?:社|が|は|の).*?(AI|人工知能|機械学習|ディープラーニング)'
                 ]

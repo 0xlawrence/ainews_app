@@ -15,6 +15,7 @@ from src.utils.text_processing import (
     fix_inappropriate_period_insertions,
     fix_particle_duplication,
     clean_llm_response,
+    extract_japanese_sentences,
 )
 from src.constants.messages import CLEANING_PATTERNS
 
@@ -27,6 +28,46 @@ class ResponseParser:
     def __init__(self):
         """Initialize the response parser."""
         logger.info("Response Parser initialized")
+
+    # --- Internal quality gates ---
+    def _needs_regeneration(self, points: list[str]) -> bool:
+        """Lightweight quality gate for summary points to decide regeneration."""
+        if not points or len(points) < 3:
+            return True
+        meta_patterns = [
+            r'^はい、?承知', r'^以下が要約です[:：]', r'^要約[:：]', r'^Summary[:：]'
+        ]
+        forbidden_words = ['この', 'その', 'あの', 'どの']
+        ok = 0
+        for p in points:
+            if not isinstance(p, str):
+                continue
+            text = p.strip()
+            if len(text) < 30:
+                continue
+            if any(re.search(mp, text) for mp in meta_patterns):
+                continue
+            if any(w in text for w in forbidden_words):
+                continue
+            ok += 1
+        return ok < 3
+
+    def _regenerate_summary_via_heuristics(self, content: str) -> list[str]:
+        """Heuristic regeneration using sentence extraction and cleaning."""
+        candidates = extract_japanese_sentences(content or '', min_length=30, max_length=150)
+        cleaned: list[str] = []
+        for c in candidates[:6]:
+            t = fix_inappropriate_period_insertions(c)
+            t = fix_particle_duplication(t)
+            t = clean_llm_response(t)
+            if len(t.strip()) >= 30:
+                cleaned.append(t if t.endswith(('。', '！', '？')) else t + '。')
+            if len(cleaned) >= 4:
+                break
+        # Fallback: at least 3 items using chunks
+        while len(cleaned) < 3 and candidates:
+            cleaned.append((candidates.pop(0) + '。')[:70])
+        return cleaned[:4]
     
     def extract_summary_from_response(self, content: str, model_name: str) -> Union[SummaryOutput, None]:
         """Extract SummaryOutput from LLM response content."""
@@ -99,10 +140,22 @@ class ResponseParser:
                             processed_point = fix_inappropriate_period_insertions(point)
                             processed_point = fix_particle_duplication(processed_point)
                             processed_point = clean_llm_response(processed_point)
+                            # 簡易ゲート: 極端に短い/メタ混入なら除外
+                            if len(processed_point.strip()) < 20 or re.search(r'^はい、?承知|^以下が要約です[:：]', processed_point):
+                                continue
                             processed_points.append(processed_point)
                         else:
                             processed_points.append(point)
-                    json_content['summary_points'] = processed_points
+                    # 品質ゲート: 不十分ならヒューリスティック再生成
+                    if self._needs_regeneration(processed_points):
+                        regen = self._regenerate_summary_via_heuristics(content)
+                        if len(regen) >= 3:
+                            json_content['summary_points'] = regen[:4]
+                        else:
+                            # フォールバック: テキスト解析
+                            fallback = self.parse_text_to_summary(content, model_name)
+                            return fallback
+                    json_content['summary_points'] = processed_points[:4]
                 
                 return SummaryOutput(**json_content)
             except Exception as e:
@@ -185,8 +238,15 @@ class ResponseParser:
             else:
                 processed_points.append(point)
 
+        # 品質ゲート: 不十分ならヒューリスティック再生成
+        final_points = processed_points
+        if self._needs_regeneration(final_points):
+            regen = self._regenerate_summary_via_heuristics(content)
+            if len(regen) >= 3:
+                final_points = regen
+
         return SummaryOutput(
-            summary_points=processed_points,
+            summary_points=final_points[:4],
             confidence_score=0.6,  # Lower confidence for text parsing
             source_reliability="medium",
             model_used=model_name,
