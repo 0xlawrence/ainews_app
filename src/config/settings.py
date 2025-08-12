@@ -20,10 +20,10 @@ class LLMSettings(BaseSettings):
     claude_api_key: str = Field(..., env="CLAUDE_API_KEY", alias="anthropic_api_key")
 
     # Model names
-    primary_model: str = Field(default="gemini-2.5-flash", env="PRIMARY_LLM_MODEL")
-    fallback_model: str = Field(default="claude-3-5-sonnet-20241022", env="FALLBACK_LLM_MODEL")
-    final_fallback_model: str = Field(default="gpt-4o-mini", env="FINAL_FALLBACK_LLM_MODEL")
-    topic_naming_model: str = Field(default="gemini-1.5-flash", env="TOPIC_NAMING_MODEL")
+    primary_model: str = Field(default_factory=lambda: os.getenv("PRIMARY_LLM_MODEL", "gemini-2.5-flash"))
+    fallback_model: str = Field(default_factory=lambda: os.getenv("FALLBACK_LLM_MODEL", "claude-3-5-sonnet-20241022"))
+    final_fallback_model: str = Field(default_factory=lambda: os.getenv("FINAL_FALLBACK_LLM_MODEL", "gpt-4o-mini"))
+    topic_naming_model: str = Field(default_factory=lambda: os.getenv("TOPIC_NAMING_MODEL", "gemini-1.5-flash"))
 
     # Retry settings
     max_retries: int = Field(default=3, env="LLM_MAX_RETRIES")
@@ -87,12 +87,12 @@ class EmbeddingSettings(BaseSettings):
 
     # Similarity thresholds (these were previously magic numbers)
     # バランス調整: 真の重複のみ除去、関連記事は保持 - ULTRA CONSERVATIVE
-    duplicate_similarity_threshold: float = Field(default=0.88, env="DUPLICATE_SIMILARITY_THRESHOLD")
+    duplicate_similarity_threshold: float = Field(default=0.85, env="DUPLICATE_SIMILARITY_THRESHOLD")
     consolidation_threshold_adjustment: float = Field(default=0.25, env="CONSOLIDATION_THRESHOLD_ADJUSTMENT")
-    minimum_consolidation_threshold: float = Field(default=0.6, env="MIN_CONSOLIDATION_THRESHOLD")
+    minimum_consolidation_threshold: float = Field(default=0.55, env="MIN_CONSOLIDATION_THRESHOLD")
 
     # Context analysis thresholds - バランス調整: 品質と記事数の両立
-    context_similarity_threshold: float = Field(default=0.6, env="CONTEXT_SIMILARITY_THRESHOLD")  # 品質確保しつつ記事数維持
+    context_similarity_threshold: float = Field(default=0.75, env="CONTEXT_SIMILARITY_THRESHOLD")  # 品質確保しつつ記事数維持
     sequel_detection_threshold: float = Field(default=0.8, env="SEQUEL_DETECTION_THRESHOLD")
     enhanced_diff_threshold: float = Field(default=0.15, env="ENHANCED_DIFF_THRESHOLD")  # Enhanced vs basic similarity difference
     multi_source_detection_threshold: float = Field(default=0.85, env="MULTI_SOURCE_DETECTION_THRESHOLD")  # Multi-source topic detection
@@ -113,7 +113,7 @@ class ProcessingSettings(BaseSettings):
     """Content processing and workflow settings."""
 
     # Article processing limits - increased to ensure sufficient articles
-    max_articles_per_run: int = Field(default=50, env="MAX_ARTICLES_PER_RUN")
+    max_articles_per_run: int = Field(default=30, env="MAX_ARTICLES_PER_RUN")
     max_content_length: int = Field(default=10000, env="MAX_CONTENT_LENGTH")
     min_content_length: int = Field(default=100, env="MIN_CONTENT_LENGTH")
 
@@ -126,8 +126,8 @@ class ProcessingSettings(BaseSettings):
     title_short_length: int = Field(default=120, env="TITLE_SHORT_LENGTH")  # Section title length (doubled for Japanese)
 
     # Quality thresholds - lowered to increase article yield for PRD F-5 compliance
-    min_quality_score: float = Field(default=0.5, env="MIN_QUALITY_SCORE")
-    max_forbidden_phrases: int = Field(default=3, env="MAX_FORBIDDEN_PHRASES")
+    min_quality_score: float = Field(default=0.7, env="MIN_QUALITY_SCORE")
+    max_forbidden_phrases: int = Field(default=2, env="MAX_FORBIDDEN_PHRASES")
 
     # Clustering settings
     max_clusters: int = Field(default=8, env="MAX_CLUSTERS")

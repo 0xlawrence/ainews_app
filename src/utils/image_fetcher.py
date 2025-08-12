@@ -330,6 +330,8 @@ class ImageFetcher:
 
     def _is_suitable_content_image(self, img_tag, src: str) -> bool:
         """Check if an image is suitable for use as content image."""
+        if not src:
+            return False
         # Skip obviously small images based on attributes
         width = img_tag.get('width')
         height = img_tag.get('height')
@@ -357,6 +359,8 @@ class ImageFetcher:
             r'social',
             r'share',
             r'ads?/',
+            r'ad[-_/]',
+            r'banner',
             r'advertisement',
             r'tracking',
             r'analytics',
@@ -376,6 +380,7 @@ class ImageFetcher:
             r'post',
             r'feature',
             r'hero',
+            r'hero[- ]banner',
             r'banner',
             r'cover',
         ]
@@ -388,6 +393,13 @@ class ImageFetcher:
 
         # Boost score for content-related terms
         has_content_hint = any(re.search(pattern, context) for pattern in prefer_patterns)
+
+        # If it looks like an advertisement or UI element, skip (but allow hero-banner unless clearly ad)
+        if re.search(r'(ad-|/ads/|advert|sponsor)', context) and not re.search(r'hero[- ]banner', context):
+            return False
+
+        if has_content_hint:
+            return True
 
         return True  # Default to suitable, let download validation filter out unsuitable images
 

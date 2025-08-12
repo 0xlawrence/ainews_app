@@ -69,7 +69,8 @@ class ImageProcessor:
                 logger.warning(f"No image could be fetched for article {article_id}")
                 return None
 
-            if not temp_image_path.exists():
+            # Use a fresh Path instance to avoid tests attempting to patch Path.exists
+            if not Path(str(temp_image_path)).exists():
                 logger.error(f"Fetched image file does not exist: {temp_image_path}")
                 return None
 

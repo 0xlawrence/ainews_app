@@ -8,7 +8,7 @@ style guidelines, and automated quality assurance.
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Callable, Optional
 
 import src.models.enhanced_schemas as es
 from src.utils.logger import setup_logging
@@ -28,8 +28,8 @@ class StyleRule:
     """Represents a style validation rule."""
     name: str
     description: str
-    pattern: str | None = None
-    check_function: callable | None = None
+    pattern: Optional[str] = None
+    check_function: Optional[Callable] = None
     severity: ViolationSeverity = ViolationSeverity.WARNING
     category: str = "style"
 

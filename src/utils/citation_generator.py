@@ -795,17 +795,24 @@ class CitationGenerator:
                 best_line = cleaned_line
                 break
 
-        # Fallback to first line if no Japanese found
+        # Fallback: pick the first line containing any Japanese chars after cleaning
         if not best_line and lines:
-            best_line = lines[0]
-            # Apply meta-patterns to fallback
-            for pattern in meta_patterns:
-                best_line = re.sub(pattern, r'\1' if r'\1' in pattern else '', best_line, flags=re.IGNORECASE)
+            selected = None
+            for candidate in lines:
+                cleaned_candidate = candidate
+                for pattern in meta_patterns:
+                    cleaned_candidate = re.sub(pattern, r'', cleaned_candidate, flags=re.IGNORECASE)
+                cleaned_candidate = cleaned_candidate.strip()
+                if re.search(r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]', cleaned_candidate):
+                    selected = cleaned_candidate
+                    break
+            best_line = selected or lines[0]
 
         text = best_line.strip()
 
-        # Remove only paired quote marks at start and end
-        text = re.sub(r'^[「『"](.*?)[」』"]$', r'\1', text)
+        # Remove only paired quote marks at start and end (preserve non-empty)
+        unquoted = re.sub(r'^[「『\"]\s*(.*?)\s*[」』\"]$', r'\1', text)
+        text = unquoted or text
 
         # Remove trailing template phrases (enhanced)
         template_phrases = [
@@ -841,6 +848,13 @@ class CitationGenerator:
         # Final cleanup and sentence completeness check
         text = text.strip()
 
+        # If still empty, try extracting quoted content from original lines
+        if not text:
+            joined = "\n".join(lines)
+            m = re.search(r'「([^」]+)」', joined)
+            if m:
+                text = m.group(1).strip()
+
         if text:
             # Fix common incomplete sentence patterns
             # Remove standalone particles at the end
@@ -849,24 +863,16 @@ class CitationGenerator:
             # Fix broken sentence connections
             text = re.sub(r'([A-Za-z\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FAF]+)が。\s*([^。]+)', r'\1が\2', text)
 
-            # Ensure proper sentence endings for citations (target 80-120 chars)
-            if not text.endswith(('。', '！', '？', '.', '!', '?')):
-                # If text seems incomplete, add appropriate ending
-                if len(text) > 20:
-                    if any(word in text for word in ['発表', '開発', '導入', '公開', '実現']):
-                        text += 'しました。'
-                    elif any(word in text for word in ['機能', '技術', 'AI', 'サービス']):
-                        text += 'です。'
-                    else:
-                        text += '。'
+            # Ensure proper sentence endings conservatively
+            if not text.endswith(('。', '！', '？', '.', '!', '?')) and len(text) > 25:
+                if any(word in text for word in ['発表', '開発', '導入', '公開', '実現']):
+                    text += 'しました。'
+                elif any(word in text for word in ['機能', '技術', 'AI', 'サービス']):
+                    text += 'です。'
                 else:
-                    # Too short to be a valid citation
-                    return ""
+                    text += '。'
 
-            # Check final length and quality
-            if len(text) < 30:
-                # Too short for a good citation
-                return ""
+            # Do not drop short but valid content
             elif len(text) > 150:
                 # Truncate at sentence boundary
                 sentences = re.split(r'([。！？])', text)

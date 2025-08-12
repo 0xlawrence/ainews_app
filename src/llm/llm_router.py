@@ -6,11 +6,8 @@ import logging
 import re
 import time
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import ChatOpenAI
 
 from src.config.settings import get_settings
 from src.models.schemas import ProcessedArticle, SummaryOutput
@@ -35,8 +32,10 @@ class LLMRouter:
         logger.info("LLM Router initialized with primary models: %s, fallback models: %s",
                    self.primary_models, self.fallback_models)
 
-    def _create_gemini_client(self) -> ChatGoogleGenerativeAI:
+    def _create_gemini_client(self) -> BaseChatModel:
         """Create Gemini client with optimized settings."""
+        # Lazy import to avoid heavy optional deps during test collection
+        from langchain_google_genai import ChatGoogleGenerativeAI
         api_key = self.settings.llm.gemini_api_key
 
         # Debug logging for API key
@@ -63,8 +62,10 @@ class LLMRouter:
             # Note: removed thinking-related and response_format parameters as they're not supported by LangChain ChatGoogleGenerativeAI
         )
 
-    def _create_claude_client(self) -> ChatAnthropic:
+    def _create_claude_client(self) -> BaseChatModel:
         """Create Claude client."""
+        # Lazy import to avoid heavy optional deps during test collection
+        from langchain_anthropic import ChatAnthropic
         api_key = self.settings.llm.claude_api_key
 
         if not api_key:
@@ -88,8 +89,10 @@ class LLMRouter:
             timeout=self.timeout
         )
 
-    def _create_openai_client(self) -> ChatOpenAI:
+    def _create_openai_client(self) -> BaseChatModel:
         """Create OpenAI client."""
+        # Lazy import to avoid heavy optional deps during test collection
+        from langchain_openai import ChatOpenAI
         api_key = self.settings.llm.openai_api_key
 
         if not api_key:
