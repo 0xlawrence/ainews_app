@@ -444,6 +444,25 @@
       }
     },
     {
+      "id": "ai_weekly",
+      "name": "AI Weekly",
+      "url": "https://aiweekly.co/feed",
+      "source_type": "rss",
+      "tags": [
+        "ai",
+        "newsletter",
+        "curated",
+        "expert-signal"
+      ],
+      "enabled": true,
+      "last_checked": null,
+      "metadata": {
+        "description": "Tracks what influential AI experts and organizations are reading and sharing",
+        "priority": 2,
+        "category": "ニュースレター系"
+      }
+    },
+    {
       "id": "the_information",
       "name": "The Information",
       "url": "https://www.theinformation.com/feed",
